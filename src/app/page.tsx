@@ -1,12 +1,13 @@
-import { auth } from '@clerk/nextjs/server';
+import { createServerClient } from '@/lib/supabase';
 import { redirect } from 'next/navigation';
 
 export default async function Page() {
-  const { userId } = await auth();
-
-  if (!userId) {
+  const supabase = await createServerClient();
+  const {
+    data: { session }
+  } = await supabase.auth.getSession();
+  if (!session) {
     return redirect('/auth/sign-in');
-  } else {
-    redirect('/dashboard/overview');
   }
+  return redirect('/dashboard/overview');
 }
