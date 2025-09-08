@@ -1,37 +1,36 @@
-import { createBrowserClient } from '@supabase/ssr';
-import { createServerClient as createSupabaseServerClient } from '@supabase/ssr';
+import {
+  createClientComponentClient,
+  createServerComponentClient,
+} from '@supabase/auth-helpers-nextjs';
 
+// Memoize the client on the global object so multiple calls from
+// different components / renders return the same instance. This
+// avoids creating multiple auth listeners or duplicate network
+// requests caused by instantiating many clients in the browser.
 export function createClient() {
-  return createBrowserClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-  );
+  const g = globalThis as any;
+  if (!g.__supabase_client) {
+    g.__supabase_client = createClientComponentClient({
+      supabaseUrl: process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      supabaseKey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+    });
+  }
+  return g.__supabase_client;
 }
 
 export async function createServerClient() {
   const { cookies } = await import('next/headers');
+  // Next 15 requires awaiting cookies() before usage in some contexts (route handlers)
   const cookieStore = await cookies();
 
-  return createSupabaseServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+  return createServerComponentClient(
     {
-      cookies: {
-        getAll() {
-          return cookieStore.getAll();
-        },
-        setAll(cookiesToSet: any[]) {
-          try {
-            cookiesToSet.forEach(({ name, value, options }) =>
-              cookieStore.set(name, value, options)
-            );
-          } catch {
-            // The `setAll` method was called from a Server Component.
-            // This can be ignored if you have middleware refreshing
-            // user sessions.
-          }
-        }
-      }
+      // Provide an accessor that returns the already-fetched cookie store
+      cookies: () => cookieStore,
+    },
+    {
+      supabaseUrl: process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      supabaseKey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     }
   );
 }

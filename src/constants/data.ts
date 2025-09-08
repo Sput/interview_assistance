@@ -66,6 +66,23 @@ export const navItems: NavItem[] = [
     isActive: false,
     items: [] // No child items
   }
+  ,
+  {
+    title: 'Chat',
+    url: '/chat',
+    icon: 'help', // using help icon as a '?' indicator for a new page
+    shortcut: ['c', 'c'],
+    isActive: false,
+    items: []
+  },
+  {
+    title: 'Voice Test',
+    url: '/voice-test',
+    icon: 'microphone',
+    shortcut: ['v', 't'],
+    isActive: false,
+    items: []
+  }
 ];
 
 export interface SaleUser {

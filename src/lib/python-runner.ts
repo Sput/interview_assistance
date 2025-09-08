@@ -70,13 +70,13 @@ export class PythonRunner {
             const data = stdout.trim() ? JSON.parse(stdout) : null;
             resolve({
               success: true,
-              data,
+              data: data as unknown as T,
               executionTime
             });
           } catch (parseError) {
             resolve({
               success: true,
-              data: stdout.trim(),
+              data: stdout.trim() as unknown as T,
               executionTime
             });
           }
@@ -142,13 +142,13 @@ export class PythonRunner {
             const data = stdout.trim() ? JSON.parse(stdout) : null;
             resolve({
               success: true,
-              data,
+              data: data as unknown as T,
               executionTime
             });
           } catch (parseError) {
             resolve({
               success: true,
-              data: stdout.trim(),
+              data: stdout.trim() as unknown as T,
               executionTime
             });
           }
