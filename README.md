@@ -3,21 +3,25 @@
   <source media="(prefers-color-scheme: light)" srcset="https://user-images.githubusercontent.com/9113740/201498152-b171abb8-9225-487a-821c-6ff49ee48579.png">
 </picture>
 
-<div align="center"><strong>Next.js Admin Dashboard Starter Template With Shadcn-ui</strong></div>
-<div align="center">Built with the Next.js 15 App Router</div>
+<div align="center"><strong>Interview Assistance Application</strong></div>
+<div align="center">AI-powered voice interview platform with Next.js 15 App Router</div>
 <br />
 <div align="center">
-<a href="https://dub.sh/shadcn-dashboard">View Demo</a>
+<a href="https://github.com/Sput/interview_assistance">View Repository</a>
 <span>
 </div>
 
 ## Overview
 
-This is a starter template using the following stack:
+This is an AI-powered interview assistance application with voice recognition capabilities using the following stack:
 
-- Framework - [Next.js 15](https://nextjs.org/13)
+- Framework - [Next.js 15](https://nextjs.org/15)
 - Language - [TypeScript](https://www.typescriptlang.org)
-- Auth - [Clerk](https://go.clerk.com/ILdYhn7)
+- Authentication - [Supabase Auth](https://supabase.com/auth)
+- AI Integration - [OpenAI GPT-4](https://openai.com)
+- Voice Recognition - [Web Speech API](https://developer.mozilla.org/en-US/docs/Web/API/Web_Speech_API)
+- Text-to-Speech - [Speech Synthesis API](https://developer.mozilla.org/en-US/docs/Web/API/SpeechSynthesis)
+- Database - [Supabase](https://supabase.com)
 - Error tracking - [<picture><img alt="Sentry" src="public/assets/sentry.svg">
         </picture>](https://sentry.io/for/nextjs/?utm_source=github&utm_medium=paid-community&utm_campaign=general-fy26q2-nextjs&utm_content=github-banner-project-tryfree)
 - Styling - [Tailwind CSS v4](https://tailwindcss.com)
@@ -37,7 +41,7 @@ _If you are looking for a Tanstack start dashboard template, here is the [repo](
 
 | Pages                                                                                 | Specifications                                                                                                                                                                                                                                                          |
 | :------------------------------------------------------------------------------------ | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [Signup / Signin](https://go.clerk.com/ILdYhn7)      | Authentication with **Clerk** provides secure authentication and user management with multiple sign-in options including passwordless authentication, social logins, and enterprise SSO - all designed to enhance security while delivering a seamless user experience. |
+| [Signup / Signin](/auth/sign-in)      | Authentication with **Supabase** provides secure authentication and user management with multiple sign-in options including email/password authentication, social logins, and enterprise SSO - all designed to enhance security while delivering a seamless user experience. |
 | [Dashboard (Overview)](https://shadcn-dashboard.kiranism.dev/dashboard)    | Cards with Recharts graphs for analytics. Parallel routes in the overview sections feature independent loading, error handling, and isolated component rendering. |
 | [Product](https://shadcn-dashboard.kiranism.dev/dashboard/product)         | Tanstack tables with server side searching, filter, pagination by Nuqs which is a Type-safe search params state manager in nextjs                                                                                                                                       |
 | [Product/new](https://shadcn-dashboard.kiranism.dev/dashboard/product/new) | A Product Form with shadcn form (react-hook-form + zod).                                                                                                                                                                                                                |
@@ -99,14 +103,28 @@ git clone https://github.com/Kiranism/next-shadcn-dashboard-starter.git
 - `pnpm install` ( we have legacy-peer-deps=true added in the .npmrc)
 - Create a `.env.local` file by copying the example environment file:
   `cp env.example.txt .env.local`
-- Add the required environment variables to the `.env.local` file.
+- Add the required environment variables to the `.env.local` file:
+  - `OPENAI_API_KEY` - Your OpenAI API key for AI chat functionality
+  - `NEXT_PUBLIC_SUPABASE_URL` - Your Supabase project URL
+  - `NEXT_PUBLIC_SUPABASE_ANON_KEY` - Your Supabase anonymous key
 - `pnpm run dev`
 
 ##### Environment Configuration Setup
 
-To configure the environment for this project, refer to the `env.example.txt` file. This file contains the necessary environment variables required for authentication and error tracking.
+To configure the environment for this project, refer to the `env.example.txt` file. This file contains the necessary environment variables required for:
+
+- **OpenAI Integration**: API key for AI-powered interview assistance
+- **Supabase Authentication**: Database and authentication setup
+- **Error Tracking**: Sentry configuration (optional)
 
 You should now be able to access the application at http://localhost:3000.
+
+##### Voice Features Setup
+
+The voice testing functionality requires:
+- A modern browser with Web Speech API support (Chrome, Safari, Edge)
+- Microphone permissions
+- OpenAI API key for AI responses
 
 > [!WARNING]
 > After cloning or forking the repository, be cautious when pulling or syncing with the latest changes, as this may result in breaking conflicts.

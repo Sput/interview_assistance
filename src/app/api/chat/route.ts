@@ -9,7 +9,7 @@ export const dynamic = "force-dynamic";
 
 export async function POST(req: NextRequest) {
   console.log('🚀 API route called');
-  const { message, previousResponseId, conversation_id } = await req.json();
+  const { message, previousResponseId, conversation_id, mode } = await req.json();
   console.log('📥 Request data:', { message, previousResponseId, conversation_id });
 
   // Check if API key is set
@@ -32,12 +32,13 @@ export async function POST(req: NextRequest) {
     return new Response('OpenAI client not available', { status: 500 });
   }
 
-  // Build a request using the OpenAI Responses API with streaming
+  // Build a request using the OpenAI API with streaming
   console.log('🌐 Creating OpenAI Responses stream...');
   let respStream: any;
   try {
     const hasResponsesStream = !!(client as any)?.responses?.stream;
-    if (!hasResponsesStream) {
+    const forceChat = mode === 'chat_completions';
+    if (forceChat || !hasResponsesStream) {
       console.warn('⚠️ openai package version lacks Responses.stream(). Falling back to Chat Completions.');
       // Fallback: replicate prior chat.completions streaming behavior
       const stream = await client.chat.completions.create({

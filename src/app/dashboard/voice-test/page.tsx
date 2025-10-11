@@ -34,10 +34,10 @@ export default function VoiceTest() {
   const { send, isStreaming, previousResponseIdRef } = useChat();
   const conversationIdRef = useRef<string | null>(null);
 
-  // Track previous chunks length (kept for potential future use)
+  // Track previous chunks length to detect new final utterances
   const prevChunksLen = useRef(0);
-  const awaitingFinalRef = useRef(false);
-  const endFallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Guard to avoid duplicate auto-submissions
+  const hasSubmittedRef = useRef(false);
 
   // TTS helper that pauses ASR to avoid echo and optionally resumes
   const speakText = (text: string) => {
@@ -94,8 +94,6 @@ export default function VoiceTest() {
 
     let full = '';
     try {
-      // Indicate we are processing a response
-      dispatch({ type: 'PROCESS_BEGIN' });
       console.log('🌐 Calling OpenAI API...');
       await send(
         text,
@@ -118,14 +116,6 @@ export default function VoiceTest() {
     } catch (err) {
       console.error('❌ Chat error:', err);
       setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, text: '\n[Error generating response]' } : m)));
-      // Clear processing state on error
-      dispatch({ type: 'USER_STOP' });
-      return;
-    } finally {
-      // If not auto-resuming after TTS, conversation is inactive, or no content was returned, reset to idle
-      if (!autoResumeAfterTTS || !conversationActiveRef.current || !full) {
-        dispatch({ type: 'USER_STOP' });
-      }
     }
   };
 
@@ -134,22 +124,18 @@ export default function VoiceTest() {
     console.log('🎤 User stopped listening');
     stop();
     setIsListening(false);
-    // We need to wait a tick for Chrome to deliver the final result
-    awaitingFinalRef.current = true;
-    if (endFallbackTimerRef.current) clearTimeout(endFallbackTimerRef.current);
-    endFallbackTimerRef.current = setTimeout(() => {
-      if (!awaitingFinalRef.current) return; // already handled by final event
-      const fallback = (model.ctx.transcript || '').trim();
-      console.log('⏱️ Fallback submit with transcript:', fallback);
-      if (fallback) {
-        handleUserSubmit(fallback);
-      } else {
-        console.log('⚠️ No transcript available after timeout; resetting to idle');
-        dispatch({ type: 'USER_STOP' });
-      }
-      awaitingFinalRef.current = false;
-    }, 600);
+    // submit model.ctx.transcript (reflects finals via reducer)
+    const finalText = model.ctx.transcript || '';
+    console.log('📝 Final transcript:', finalText);
+    if (finalText.trim()) {
+      console.log('✅ Submitting transcript to AI...');
+      handleUserSubmit(finalText.trim());
+    } else {
+      console.log('⚠️ No transcript to submit');
+    }
+    dispatch({ type: 'USER_STOP' });
     prevChunksLen.current = 0;
+    hasSubmittedRef.current = true;
   };
 
   const handleStartListening = () => {
@@ -159,6 +145,7 @@ export default function VoiceTest() {
     setIsListening(true);
     setConversationActive(true);
     conversationActiveRef.current = true;
+    hasSubmittedRef.current = false;
   };
 
   // Auto-resume listening after TTS completes (only if auto-resume is enabled)
@@ -171,21 +158,27 @@ export default function VoiceTest() {
     }
   }, [model.state, autoResumeAfterTTS, messages.length, isListening, conversationActive]);
 
-  // Removed: auto-submit on ASR final. Submission now happens only when the user presses the button.
-
-  // When a final transcript arrives after we pressed End response, submit it
+  // Auto-submit when a final transcript arrives (single-press UX)
   useEffect(() => {
-    if (!awaitingFinalRef.current) return;
-    const finalText = (model.ctx.transcript || '').trim();
-    if (!finalText) return;
-    console.log('✅ Final transcript arrived post-stop:', finalText);
-    awaitingFinalRef.current = false;
-    if (endFallbackTimerRef.current) {
-      clearTimeout(endFallbackTimerRef.current);
-      endFallbackTimerRef.current = null;
+    // Reducer moves to 'processing' when an ASR_FINAL is received
+    const finalText = model.ctx.transcript?.trim();
+    if (
+      isListening &&
+      model.state === 'processing' &&
+      finalText &&
+      !hasSubmittedRef.current
+    ) {
+      console.log('🤖 Auto-submitting final transcript:', finalText);
+      hasSubmittedRef.current = true; // guard
+      // Stop recognition first to avoid capturing more audio
+      stop();
+      setIsListening(false);
+      // Submit captured final text
+      handleUserSubmit(finalText);
+      // Clear reducer state to idle
+      dispatch({ type: 'USER_STOP' });
     }
-    handleUserSubmit(finalText);
-  }, [model.ctx.transcript]);
+  }, [model.state, model.ctx.transcript, isListening]);
 
   const clearConversation = () => setMessages([]);
 
@@ -197,6 +190,7 @@ export default function VoiceTest() {
     conversationActiveRef.current = false;
     dispatch({ type: 'USER_STOP' });
     prevChunksLen.current = 0;
+    hasSubmittedRef.current = false;
   };
 
   return (
@@ -287,26 +281,22 @@ export default function VoiceTest() {
               Send
             </button>
 
-            {!isListening && (
+            {model.state === 'listening' ? (
+              <button
+                className="rounded-md border px-2 py-2 dark:border-zinc-800 bg-red-100 dark:bg-red-900"
+                aria-label="Stop listening"
+                onClick={handleStopListening}
+              >
+                <MicOff className="h-4 w-4" />
+              </button>
+            ) : (
               <button
                 className="rounded-md border px-2 py-2 dark:border-zinc-800"
                 aria-label="Start listening"
                 onClick={handleStartListening}
                 disabled={model.state === 'speaking' || model.state === 'processing'}
-                title="Start listening"
               >
                 <Mic className="h-4 w-4" />
-              </button>
-            )}
-
-            {isListening && (
-              <button
-                className="rounded-md bg-red-600 px-3 py-2 text-sm text-white hover:bg-red-700"
-                onClick={handleStopListening}
-                aria-label="End response"
-                title="End response"
-              >
-                End response
               </button>
             )}
 

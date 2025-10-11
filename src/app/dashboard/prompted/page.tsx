@@ -3,12 +3,14 @@
 import React, { useEffect, useReducer, useRef, useState } from 'react';
 import { useSpeechRecognition } from '@/hooks/useSpeechRecognition';
 import { initialVoiceModel, voiceReducer } from '@/state/voiceReducer';
-import { useChat } from '@/hooks/useChat';
+// import { useChat } from '@/hooks/useChat';
 import { Badge } from '@/components/ui/badge';
 import { MessageCircle } from 'lucide-react';
 import { Mic, MicOff, Volume2 } from 'lucide-react';
+import { createClient } from '@/lib/supabase';
 
 type Message = { id: string; text: string; type: 'user' | 'assistant' };
+
 
 export default function VoiceTest() {
   const [model, dispatch] = useReducer(voiceReducer, initialVoiceModel);
@@ -31,8 +33,57 @@ export default function VoiceTest() {
   const [conversationActive, setConversationActive] = useState(true);
   const speakingRef = useRef(false);
   const conversationActiveRef = useRef(true);
-  const { send, isStreaming, previousResponseIdRef } = useChat();
   const conversationIdRef = useRef<string | null>(null);
+  const chatPrevResponseIdRef = useRef<string | null>(null);
+  const lastQuestionIdRef = useRef<number | null>(null);
+  const lastAnswerIdRef = useRef<number | null>(null);
+
+  // Local sender that uses chat_completions via our /api/chat route
+  async function sendWithChatCompletions(
+    message: string,
+    onDelta: (chunk: string) => void,
+    conversationId?: string | null
+  ) {
+    const res = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        message,
+        previousResponseId: chatPrevResponseIdRef.current,
+        conversation_id: conversationId,
+        mode: 'chat_completions',
+      }),
+    });
+
+    if (!res.ok || !res.body) return;
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder('utf-8');
+    let buffer = '';
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      const chunk = decoder.decode(value, { stream: true });
+      buffer += chunk;
+
+      const marker = buffer.indexOf('<<<response_id:');
+      if (marker !== -1) {
+        const end = buffer.indexOf('>>>', marker);
+        if (end !== -1) {
+          const id = buffer.slice(marker + 15, end).trim();
+          chatPrevResponseIdRef.current = id;
+          buffer = buffer.slice(0, marker);
+        }
+      }
+
+      if (buffer.trim().length > 0) {
+        onDelta(buffer);
+        buffer = '';
+      } else {
+        buffer = '';
+      }
+    }
+  }
 
   // Track previous chunks length (kept for potential future use)
   const prevChunksLen = useRef(0);
@@ -97,7 +148,7 @@ export default function VoiceTest() {
       // Indicate we are processing a response
       dispatch({ type: 'PROCESS_BEGIN' });
       console.log('🌐 Calling OpenAI API...');
-      await send(
+      await sendWithChatCompletions(
         text,
         (delta: string) => {
           console.log('📥 Received delta:', delta);
@@ -129,6 +180,212 @@ export default function VoiceTest() {
     }
   };
 
+  // Fetch a question from Supabase and ask it
+  const askInterviewQuestion = async () => {
+    try {
+      const supabase = createClient();
+      const { data, error } = await supabase
+        .from('questions_table')
+        .select('id, interview_question')
+        .order('id', { ascending: true })
+        .limit(1)
+        .maybeSingle();
+
+      if (error) {
+        console.error('Error fetching interview question:', {
+          message: (error as any)?.message,
+          code: (error as any)?.code,
+          details: (error as any)?.details,
+          hint: (error as any)?.hint,
+        });
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: `${Date.now()}-iq-error`,
+            text:
+              'Unable to fetch an interview question. Please ensure the table has data and the anon role has a SELECT policy.',
+            type: 'assistant',
+          },
+        ]);
+        return;
+      }
+
+      if (!data) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: `${Date.now()}-iq-empty`,
+            text: 'No questions found in questions_table.',
+            type: 'assistant',
+          },
+        ]);
+        return;
+      }
+
+      const question = data.interview_question?.trim();
+      if (!question) {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: `${Date.now()}-iq-badrow`,
+            text: 'Fetched a question row, but it had no text.',
+            type: 'assistant',
+          },
+        ]);
+        return;
+      }
+
+      // Track the last asked question id
+      lastQuestionIdRef.current = (data as any).id ?? null;
+
+      // Also create a new answers_table row now, capturing the generated id for later update
+      try {
+        const { data: userData } = await supabase.auth.getUser();
+        const userId = userData?.user?.id;
+
+        if (!userId) {
+          console.warn('No logged-in user; cannot pre-create answers_table row (user_id required).');
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: `${Date.now()}-no-user`,
+              text: 'You are not logged in. Your answer may not be saved.',
+              type: 'assistant',
+            },
+          ]);
+        } else {
+          const { data: inserted, error: insertError } = await supabase
+            .from('answers_table')
+            .insert({ user_id: userId, question_id: (data as any).id })
+            .select('id')
+            .single();
+
+          if (insertError) {
+            console.error('Failed to pre-create answers_table row:', {
+              message: (insertError as any)?.message,
+              code: (insertError as any)?.code,
+              details: (insertError as any)?.details,
+              hint: (insertError as any)?.hint,
+            });
+          } else {
+            lastAnswerIdRef.current = (inserted as any)?.id ?? null;
+            console.log('Pre-created answers_table row with id:', lastAnswerIdRef.current);
+          }
+        }
+      } catch (preErr) {
+        console.error('Unexpected error pre-creating answers_table row:', preErr);
+      }
+
+      const assistantMsg: Message = {
+        id: `${Date.now()}-iq`,
+        text: question,
+        type: 'assistant',
+      };
+      setMessages((prev) => [...prev, assistantMsg]);
+      speakText(question);
+    } catch (e: any) {
+      console.error('Unexpected error fetching question:', e?.message || e);
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `${Date.now()}-iq-unexpected`,
+          text: 'Unexpected error while fetching a question. See console for details.',
+          type: 'assistant',
+        },
+      ]);
+    }
+  };
+
+  // Save the user's answer to Supabase answers_table
+  const saveAnswerToDB = async (answerText: string) => {
+    try {
+      const questionId = lastQuestionIdRef.current;
+      if (!questionId) {
+        console.warn('No questionId available; not saving answer.');
+        return;
+      }
+      const supabase = createClient();
+      // Try to get the user id if logged in
+      let userId: string | undefined = undefined;
+      try {
+        const { data: userData } = await supabase.auth.getUser();
+        userId = userData?.user?.id;
+      } catch (_) {}
+
+      // If we pre-created an answers_table row, update it; else insert a new one (fallback)
+      if (lastAnswerIdRef.current) {
+        const query = supabase
+          .from('answers_table')
+          .update({ answer_text: answerText })
+          .eq('id', lastAnswerIdRef.current);
+
+        const { error: updateError } = await query;
+        if (updateError) {
+          console.error('Failed to update pre-created answer row:', {
+            message: (updateError as any)?.message,
+            code: (updateError as any)?.code,
+            details: (updateError as any)?.details,
+            hint: (updateError as any)?.hint,
+          });
+        } else {
+          console.log('Updated pre-created answer row successfully.');
+          // Fire edge function for vectorization (best-effort)
+          try {
+            await supabase.functions.invoke('answer_vectors', {
+              body: {
+                answer_id: lastAnswerIdRef.current,
+                question_id: questionId,
+                user_id: userId,
+              },
+            });
+          } catch (fnErr) {
+            console.error('answer_vectors invocation failed (update path):', fnErr);
+          }
+          // Clear reference so subsequent answers don’t overwrite the same row
+          lastAnswerIdRef.current = null;
+        }
+      } else {
+        const payload: any = {
+          question_id: questionId,
+          answer_text: answerText,
+        };
+        if (userId) payload.user_id = userId;
+
+        const { data: insertedRow, error } = await supabase
+          .from('answers_table')
+          .insert(payload)
+          .select('id')
+          .single();
+        if (error) {
+          console.error('Failed to insert answer:', {
+            message: (error as any)?.message,
+            code: (error as any)?.code,
+            details: (error as any)?.details,
+            hint: (error as any)?.hint,
+          });
+        } else {
+          console.log('Answer inserted successfully (no pre-created row).');
+          // Fire edge function for vectorization (best-effort)
+          try {
+            await supabase.functions.invoke('answer_vectors', {
+              body: {
+                answer_id: (insertedRow as any)?.id,
+                question_id: questionId,
+                user_id: userId,
+              },
+            });
+          } catch (fnErr) {
+            console.error('answer_vectors invocation failed (insert path):', fnErr);
+          }
+        }
+      }
+    } catch (e) {
+      console.error('Unexpected error saving answer:', e);
+    }
+  };
+
+  // Ask only when user clicks the button (no auto-ask on mount)
+
   // When user stops listening, submit the accumulated transcript
   const handleStopListening = () => {
     console.log('🎤 User stopped listening');
@@ -142,6 +399,8 @@ export default function VoiceTest() {
       const fallback = (model.ctx.transcript || '').trim();
       console.log('⏱️ Fallback submit with transcript:', fallback);
       if (fallback) {
+        // Save answer then submit to the model
+        saveAnswerToDB(fallback);
         handleUserSubmit(fallback);
       } else {
         console.log('⚠️ No transcript available after timeout; resetting to idle');
@@ -184,6 +443,8 @@ export default function VoiceTest() {
       clearTimeout(endFallbackTimerRef.current);
       endFallbackTimerRef.current = null;
     }
+    // Save answer then submit to the model
+    saveAnswerToDB(finalText);
     handleUserSubmit(finalText);
   }, [model.ctx.transcript]);
 
@@ -203,7 +464,7 @@ export default function VoiceTest() {
     <main className="p-6">
       <div className="flex flex-col gap-6">
         <div className="flex items-center justify-between">
-          <h1 className="text-2xl font-bold">Voice Test</h1>
+          <h1 className="text-2xl font-bold">Prompted</h1>
           <div className="flex items-center gap-4">
             <label className="flex items-center gap-2 text-sm">
               <input
@@ -285,6 +546,13 @@ export default function VoiceTest() {
               onClick={() => handleUserSubmit(inputText.trim())}
             >
               Send
+            </button>
+
+            <button
+              className="rounded-md border px-3 py-2 text-sm dark:border-zinc-800"
+              onClick={askInterviewQuestion}
+            >
+              Ask Interview Question
             </button>
 
             {!isListening && (
