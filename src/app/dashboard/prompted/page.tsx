@@ -27,6 +27,9 @@ export default function VoiceTest() {
   // Messages and input
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputText, setInputText] = useState('');
+  const [categories, setCategories] = useState<Array<{ id: number; name: string }>>([]);
+  const [loadingCategories, setLoadingCategories] = useState(false);
+  const [selectedCategoryId, setSelectedCategoryId] = useState<string>('');
 
   const [autoResumeAfterTTS, setAutoResumeAfterTTS] = useState(true);
   const [isListening, setIsListening] = useState(false);
@@ -126,6 +129,47 @@ export default function VoiceTest() {
     window.speechSynthesis.speak(utter);
   };
 
+  // Load categories from DB and set default selection
+  useEffect(() => {
+    const supabase = createClient();
+    let isMounted = true;
+    async function loadCategories() {
+      console.log('[prompted] Loading categories…');
+      setLoadingCategories(true);
+      const { data, error } = await supabase
+        .from('question_categories')
+        .select('id, category_name')
+        .order('category_name', { ascending: true });
+      if (!isMounted) return;
+      if (error) {
+        console.error('[prompted] Failed to load categories:', error);
+      }
+      if (!error && data) {
+        console.log('[prompted] Raw categories:', data);
+        const mapped = (data as any[])
+          .map((r) => ({ id: r.id as number, name: (r as any).category_name as string }))
+          .filter((r) => r.name);
+        console.log('[prompted] Mapped categories:', mapped);
+        setCategories(mapped);
+        // If nothing selected yet, choose first
+        if (!selectedCategoryId && mapped.length > 0) {
+          console.log('[prompted] No selectedCategoryId, defaulting to first:', mapped[0]);
+          setSelectedCategoryId(String(mapped[0].id));
+        }
+      }
+      setLoadingCategories(false);
+      console.log('[prompted] Finished loading categories');
+    }
+    loadCategories();
+    // Refresh on external changes from the manager component
+    const onChanged = () => loadCategories();
+    window.addEventListener('question-categories-changed', onChanged);
+    return () => {
+      isMounted = false;
+      window.removeEventListener('question-categories-changed', onChanged);
+    };
+  }, []);
+
   // Handle sending user text to OpenAI via existing useChat
   const handleUserSubmit = async (text: string) => {
     console.log('🚀 Starting handleUserSubmit with text:', text);
@@ -180,23 +224,123 @@ export default function VoiceTest() {
     }
   };
 
+  // New: Treat submitted text as an interview answer only (no general chat)
+  const processSubmittedAnswer = async (text: string) => {
+    const answer = text.trim();
+    if (!answer) return;
+    // Show user's answer bubble
+    const userMsg: Message = { id: Date.now().toString(), text: answer, type: 'user' };
+    setMessages((p) => [...p, userMsg]);
+    setInputText('');
+    // Save and trigger grading/feedback loop (handled downstream in saveAnswerToDB)
+    await saveAnswerToDB(answer);
+  };
+
   // Fetch a question from Supabase and ask it
   const askInterviewQuestion = async () => {
     try {
       const supabase = createClient();
-      const { data, error } = await supabase
-        .from('questions_table')
-        .select('id, interview_question')
-        .order('id', { ascending: true })
-        .limit(1)
-        .maybeSingle();
+      // Identify current user to avoid their recent questions
+      const { data: userData } = await supabase.auth.getUser();
+      const userId = userData?.user?.id;
+      console.log('[prompted] askInterviewQuestion: selectedCategoryId=', selectedCategoryId);
+      const selectedCategoryName = selectedCategoryId
+        ? categories.find((c) => String(c.id) === String(selectedCategoryId))?.name ?? null
+        : null;
+      console.log('[prompted] askInterviewQuestion: selectedCategoryName=', selectedCategoryName);
+      const lastId = lastQuestionIdRef.current;
 
-      if (error) {
+      // Fetch recent question_ids answered/asked by this user to avoid repeats
+      let recentIds: number[] = [];
+      if (userId) {
+        const { data: recentRows, error: recentErr } = await supabase
+          .from('answers_table')
+          .select('question_id')
+          .eq('user_id', userId)
+          .order('id', { ascending: false })
+          .limit(5);
+        if (!recentErr && recentRows) {
+          recentIds = (recentRows as any[])
+            .map((r) => r?.question_id)
+            .filter((id: any) => typeof id === 'number');
+        }
+        if (recentErr) {
+          console.warn('[prompted] recentIds error:', recentErr);
+        }
+      }
+      console.log('[prompted] recentIds=', recentIds);
+
+      // First get eligible row count to pick a random offset (excluding recent)
+      const categoryId = selectedCategoryId ? Number(selectedCategoryId) : null;
+      let count: number | null = null;
+      let ignoreRecent = false;
+      if (recentIds.length > 0) {
+        let q = supabase.from('questions_table').select('*', { count: 'exact', head: true });
+        if (categoryId !== null) q = q.eq('category_id', categoryId);
+        q = q.not('id', 'in', `(${recentIds.join(',')})`);
+        if (lastId) q = (q as any).neq('id', lastId);
+        console.log('[prompted] Count query (with recent filter), by category_id:', { categoryId });
+        let { count: c1, error: err1 } = await (q as any);
+        console.log('[prompted] Count result:', { c1, err1 });
+        // Fallback to legacy string category if error or zero count but legacy text exists
+        if ((err1 || (c1 ?? 0) === 0) && categoryId !== null && selectedCategoryName) {
+          // Fallback to legacy text category if RLS/schema mismatch
+          let q2 = supabase.from('questions_table').select('*', { count: 'exact', head: true }).eq('category', selectedCategoryName);
+          q2 = q2.not('id', 'in', `(${recentIds.join(',')})`);
+          if (lastId) q2 = (q2 as any).neq('id', lastId);
+          console.log('[prompted] Count fallback by legacy category:', selectedCategoryName);
+          const r2 = await (q2 as any);
+          c1 = r2.count as number | null;
+          err1 = r2.error;
+          console.log('[prompted] Count fallback result:', { c1, err1 });
+        }
+        if (!err1) count = c1 ?? 0;
+
+        // If still zero, try ignoring recent filter entirely for this category
+        if ((count ?? 0) === 0) {
+          console.log('[prompted] Zero eligible with recent filter; trying without recent filter…');
+          let q3 = supabase.from('questions_table').select('*', { count: 'exact', head: true });
+          if (categoryId !== null) q3 = q3.eq('category_id', categoryId);
+          if (lastId) q3 = (q3 as any).neq('id', lastId);
+          let { count: c3, error: err3 } = await (q3 as any);
+          console.log('[prompted] Count without recent (by category_id) result:', { c3, err3 });
+          if ((err3 || (c3 ?? 0) === 0) && categoryId !== null && selectedCategoryName) {
+            const q4 = supabase.from('questions_table').select('*', { count: 'exact', head: true }).eq('category', selectedCategoryName);
+            let _q4: any = q4;
+            if (lastId) _q4 = _q4.neq('id', lastId);
+            const r4 = await (_q4 as any);
+            c3 = r4.count as number | null;
+            console.log('[prompted] Count without recent (legacy category) result:', { c3, err: r4.error });
+          }
+          if ((c3 ?? 0) > 0) {
+            count = c3 ?? 0;
+            ignoreRecent = true;
+            console.log('[prompted] Will ignore recent filter for this pick.');
+          }
+        }
+      } else {
+        let q = supabase.from('questions_table').select('*', { count: 'exact', head: true });
+        if (categoryId !== null) q = q.eq('category_id', categoryId);
+        if (lastId) q = (q as any).neq('id', lastId);
+        console.log('[prompted] Count query (no recent filter), by category_id:', { categoryId });
+        let { count: c2, error: err2 } = await (q as any);
+        console.log('[prompted] Count result:', { c2, err2 });
+        if ((err2 || (c2 ?? 0) === 0) && categoryId !== null && selectedCategoryName) {
+          const q2 = supabase.from('questions_table').select('*', { count: 'exact', head: true }).eq('category', selectedCategoryName);
+          let _q2: any = q2;
+          if (lastId) _q2 = _q2.neq('id', lastId);
+          console.log('[prompted] Count fallback by legacy category (no recent):', selectedCategoryName);
+          const r2 = await (_q2 as any);
+          c2 = r2.count as number | null;
+          err2 = r2.error;
+          console.log('[prompted] Count fallback result (no recent):', { c2, err2 });
+        }
+        if (!err2) count = c2 ?? 0;
+      }
+
+      if (count === null) {
         console.error('Error fetching interview question:', {
-          message: (error as any)?.message,
-          code: (error as any)?.code,
-          details: (error as any)?.details,
-          hint: (error as any)?.hint,
+          message: 'Unable to determine question count',
         });
         setMessages((prev) => [
           ...prev,
@@ -210,7 +354,8 @@ export default function VoiceTest() {
         return;
       }
 
-      if (!data) {
+      console.log('[prompted] Eligible count:', count);
+      if (!count || count <= 0) {
         setMessages((prev) => [
           ...prev,
           {
@@ -222,7 +367,110 @@ export default function VoiceTest() {
         return;
       }
 
-      const question = data.interview_question?.trim();
+      const randomOffset = Math.floor(Math.random() * count);
+      console.log('[prompted] Random offset:', randomOffset);
+      let rows: any[] | null = null;
+      let fetchError: any = null;
+      if (recentIds.length > 0 && !ignoreRecent) {
+        let q = supabase
+          .from('questions_table')
+          .select('id, interview_question')
+          .order('id', { ascending: true })
+          .not('id', 'in', `(${recentIds.join(',')})`);
+        if (categoryId !== null) q = q.eq('category_id', categoryId);
+        if (lastId) q = (q as any).neq('id', lastId);
+        console.log('[prompted] Fetch query (with recent), by category_id:', { categoryId });
+        let { data, error } = await (q as any).range(randomOffset, randomOffset);
+        console.log('[prompted] Fetch result:', { len: data?.length ?? 0, error });
+        if ((error || !data || data.length === 0) && categoryId !== null && selectedCategoryName) {
+          let q2 = supabase
+            .from('questions_table')
+            .select('id, interview_question')
+            .order('id', { ascending: true })
+            .eq('category', selectedCategoryName)
+            .not('id', 'in', `(${recentIds.join(',')})`);
+          if (lastId) q2 = (q2 as any).neq('id', lastId);
+          console.log('[prompted] Fetch fallback by legacy category (with recent):', selectedCategoryName);
+          const r2 = await (q2 as any).range(randomOffset, randomOffset);
+          data = r2.data as any[] | null;
+          error = r2.error;
+          console.log('[prompted] Fetch fallback result (with recent):', { len: data?.length ?? 0, error });
+        }
+        rows = data as any[] | null;
+        fetchError = error;
+      } else {
+        let q = supabase
+          .from('questions_table')
+          .select('id, interview_question')
+          .order('id', { ascending: true });
+        if (categoryId !== null) q = q.eq('category_id', categoryId);
+        if (lastId) q = (q as any).neq('id', lastId);
+        console.log('[prompted] Fetch query (no recent), by category_id:', { categoryId });
+        let { data, error } = await (q as any).range(randomOffset, randomOffset);
+        console.log('[prompted] Fetch result (no recent):', { len: data?.length ?? 0, error });
+        if ((error || !data || data.length === 0) && categoryId !== null && selectedCategoryName) {
+          const q2 = supabase
+            .from('questions_table')
+            .select('id, interview_question')
+            .order('id', { ascending: true })
+            .eq('category', selectedCategoryName);
+          let _q2: any = q2;
+          if (lastId) _q2 = _q2.neq('id', lastId);
+          console.log('[prompted] Fetch fallback by legacy category (no recent):', selectedCategoryName);
+          const r2 = await (_q2 as any).range(randomOffset, randomOffset);
+          data = r2.data as any[] | null;
+          error = r2.error;
+          console.log('[prompted] Fetch fallback result (no recent):', { len: data?.length ?? 0, error });
+        }
+        rows = data as any[] | null;
+        fetchError = error;
+      }
+
+      // If filtering left us empty (e.g., all recent), fall back to full pool
+      if ((!rows || rows.length === 0) && recentIds.length > 0) {
+        let q = supabase
+          .from('questions_table')
+          .select('id, interview_question')
+          .order('id', { ascending: true });
+        if (categoryId !== null) q = q.eq('category_id', categoryId);
+        if (lastId) q = (q as any).neq('id', lastId);
+        console.log('[prompted] Fallback fetch to full pool (still by category_id if present):', { categoryId });
+        let { data, error } = await (q as any).range(randomOffset, randomOffset);
+        console.log('[prompted] Fallback full-pool fetch result:', { len: data?.length ?? 0, error });
+        if ((error || !data || data.length === 0) && categoryId !== null && selectedCategoryName) {
+          const q2 = supabase
+            .from('questions_table')
+            .select('id, interview_question')
+            .order('id', { ascending: true })
+            .eq('category', selectedCategoryName);
+          let _q2b: any = q2;
+          if (lastId) _q2b = _q2b.neq('id', lastId);
+          console.log('[prompted] Fallback full-pool by legacy category:', selectedCategoryName);
+          const r2 = await (_q2b as any).range(randomOffset, randomOffset);
+          data = r2.data as any[] | null;
+          error = r2.error;
+          console.log('[prompted] Fallback full-pool legacy result:', { len: data?.length ?? 0, error });
+        }
+        rows = data as any[] | null;
+        fetchError = error;
+      }
+
+      if (fetchError || !rows || rows.length === 0) {
+        console.error('Error fetching random interview question:', fetchError);
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: `${Date.now()}-iq-fetch-error`,
+            text: 'Unable to fetch a random interview question. Please try again.',
+            type: 'assistant',
+          },
+        ]);
+        return;
+      }
+
+      const row: any = rows[0];
+      const question = row.interview_question?.trim();
+      console.log('[prompted] Selected row:', row);
       if (!question) {
         setMessages((prev) => [
           ...prev,
@@ -236,7 +484,19 @@ export default function VoiceTest() {
       }
 
       // Track the last asked question id
-      lastQuestionIdRef.current = (data as any).id ?? null;
+      lastQuestionIdRef.current = row.id ?? null;
+
+      // Best-effort: ensure the question has an embedding generated
+      try {
+        const { error: vecErr } = await createClient().functions.invoke('make_vectors', {
+          body: { question_id: row.id },
+        });
+        if (vecErr) {
+          console.warn('make_vectors invocation failed (question path):', vecErr);
+        }
+      } catch (makeVecErr) {
+        console.warn('make_vectors invocation threw (question path):', makeVecErr);
+      }
 
       // Also create a new answers_table row now, capturing the generated id for later update
       try {
@@ -256,7 +516,7 @@ export default function VoiceTest() {
         } else {
           const { data: inserted, error: insertError } = await supabase
             .from('answers_table')
-            .insert({ user_id: userId, question_id: (data as any).id })
+            .insert({ user_id: userId, question_id: row.id })
             .select('id')
             .single();
 
@@ -298,6 +558,117 @@ export default function VoiceTest() {
 
   // Save the user's answer to Supabase answers_table
   const saveAnswerToDB = async (answerText: string) => {
+    const MIN_CHARS = 300;
+    // Helper to trigger cosine similarity script after saving
+    const runCosineSimilarity = async () => {
+      try {
+        const res = await fetch('/api/python', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'run_script',
+            script: 'calc_cos_similar.py',
+            data: { args: [] },
+          }),
+        });
+        if (!res.ok) {
+          console.error('Failed to trigger calc_cos_similar.py:', res.status, res.statusText);
+        } else {
+          const payload = await res.json().catch(() => null);
+          console.log('calc_cos_similar.py response:', payload);
+        }
+      } catch (e) {
+        console.error('Error calling /api/python for calc_cos_similar.py:', e);
+      }
+    };
+
+    // Poll for the grade of a specific answer and, if < 60, provide feedback and re-ask
+    const handlePostGrade = async (
+      answerId: number,
+      questionId: number,
+      userAnswer: string
+    ) => {
+      const supabase = createClient();
+      const maxAttempts = 20;
+      const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+      let grade: number | null = null;
+      for (let attempt = 0; attempt < maxAttempts; attempt++) {
+        // Occasionally re-run the script in case embeddings were late
+        if (attempt === 0 || attempt === 5 || attempt === 10) {
+          runCosineSimilarity();
+        }
+        const { data, error } = await supabase
+          .from('answers_table')
+          .select('grade')
+          .eq('id', answerId)
+          .maybeSingle();
+
+        if (!error && data && data.grade !== null && data.grade !== undefined) {
+          grade = data.grade as unknown as number;
+          break;
+        }
+        await delay(1000);
+      }
+
+      if (grade === null) {
+        console.warn('No grade available after polling; skipping feedback loop for now.');
+        return;
+      }
+
+      console.log(`Grade for answer ${answerId}:`, grade);
+      if (grade < 60) {
+        // Fetch the question text and model answer
+        const { data: q, error: qErr } = await supabase
+          .from('questions_table')
+          .select('interview_question, model_answer')
+          .eq('id', questionId)
+          .maybeSingle();
+        if (qErr || !q) {
+          console.error('Failed to fetch question/model answer for feedback:', qErr);
+          return;
+        }
+
+        const prompt = `A user was asked this: "${q.interview_question}" and responded with: "${userAnswer}". The model answer was: "${q.model_answer ?? ''}". Give the user information that will help them make a better answer.`;
+
+        // Stream feedback to the UI
+        const feedbackId = `${Date.now()}-feedback`;
+        setMessages((p) => [...p, { id: feedbackId, text: '', type: 'assistant' }]);
+        let feedbackFull = '';
+        try {
+          await sendWithChatCompletions(
+            prompt,
+            (delta: string) => {
+              feedbackFull += delta;
+              setMessages((prev) => prev.map((m) => (m.id === feedbackId ? { ...m, text: m.text + delta } : m)));
+            },
+            conversationIdRef.current ?? undefined
+          );
+        } catch (err) {
+          console.error('Error generating feedback:', err);
+        }
+
+        // After feedback, re-ask the same question and resume listening
+        const questionAgain = q.interview_question?.trim();
+        if (questionAgain) {
+          const assistantMsg = { id: `${Date.now()}-iq-repeat`, text: questionAgain, type: 'assistant' as const };
+          setMessages((prev) => [...prev, assistantMsg]);
+          speakText(questionAgain);
+          // Auto-resume will kick in after TTS if enabled; ensure conversation remains active
+          setConversationActive(true);
+          conversationActiveRef.current = true;
+        }
+      } else {
+        // Success path: congratulate and end the loop (no re-ask)
+        const successMsg = `Great job! Your score is ${grade}. You can move on to the next question when ready.`;
+        setMessages((p) => [
+          ...p,
+          { id: `${Date.now()}-success`, text: successMsg, type: 'assistant' },
+        ]);
+        speakText(successMsg);
+      }
+    };
+
     try {
       const questionId = lastQuestionIdRef.current;
       if (!questionId) {
@@ -314,6 +685,7 @@ export default function VoiceTest() {
 
       // If we pre-created an answers_table row, update it; else insert a new one (fallback)
       if (lastAnswerIdRef.current) {
+        const currentAnswerId = lastAnswerIdRef.current;
         const query = supabase
           .from('answers_table')
           .update({ answer_text: answerText })
@@ -329,18 +701,34 @@ export default function VoiceTest() {
           });
         } else {
           console.log('Updated pre-created answer row successfully.');
-          // Fire edge function for vectorization (best-effort)
-          try {
-            await supabase.functions.invoke('answer_vectors', {
-              body: {
-                answer_id: lastAnswerIdRef.current,
-                question_id: questionId,
-                user_id: userId,
-              },
-            });
-          } catch (fnErr) {
-            console.error('answer_vectors invocation failed (update path):', fnErr);
+          // If answer is too short, auto-grade as 0 and skip cosine similarity
+          if (answerText.trim().length < MIN_CHARS) {
+            console.log(`Answer length < ${MIN_CHARS}. Auto-grading 0 for answer_id=${currentAnswerId}`);
+            const { error: gradeErr } = await supabase
+              .from('answers_table')
+              .update({ grade: 0 })
+              .eq('id', currentAnswerId);
+            if (gradeErr) {
+              console.error('Failed to set short-answer grade:', gradeErr);
+            }
+          } else {
+            // Fire edge function for vectorization (best-effort)
+            try {
+              await supabase.functions.invoke('answer_vectors', {
+                body: {
+                  answer_id: lastAnswerIdRef.current,
+                  question_id: questionId,
+                  user_id: userId,
+                },
+              });
+            } catch (fnErr) {
+              console.error('answer_vectors invocation failed (update path):', fnErr);
+            }
+            // Best-effort: run cosine similarity grading script
+            runCosineSimilarity();
           }
+          // Begin post-grade flow for feedback/looping
+          handlePostGrade(currentAnswerId as unknown as number, questionId as unknown as number, answerText);
           // Clear reference so subsequent answers don’t overwrite the same row
           lastAnswerIdRef.current = null;
         }
@@ -365,17 +753,35 @@ export default function VoiceTest() {
           });
         } else {
           console.log('Answer inserted successfully (no pre-created row).');
-          // Fire edge function for vectorization (best-effort)
-          try {
-            await supabase.functions.invoke('answer_vectors', {
-              body: {
-                answer_id: (insertedRow as any)?.id,
-                question_id: questionId,
-                user_id: userId,
-              },
-            });
-          } catch (fnErr) {
-            console.error('answer_vectors invocation failed (insert path):', fnErr);
+          const newId = (insertedRow as any)?.id;
+          if (answerText.trim().length < MIN_CHARS && newId) {
+            console.log(`Answer length < ${MIN_CHARS}. Auto-grading 0 for answer_id=${newId}`);
+            const { error: gradeErr } = await supabase
+              .from('answers_table')
+              .update({ grade: 0 })
+              .eq('id', newId);
+            if (gradeErr) {
+              console.error('Failed to set short-answer grade:', gradeErr);
+            }
+          } else {
+            // Fire edge function for vectorization (best-effort)
+            try {
+              await supabase.functions.invoke('answer_vectors', {
+                body: {
+                  answer_id: newId,
+                  question_id: questionId,
+                  user_id: userId,
+                },
+              });
+            } catch (fnErr) {
+              console.error('answer_vectors invocation failed (insert path):', fnErr);
+            }
+            // Best-effort: run cosine similarity grading script
+            runCosineSimilarity();
+          }
+          // Begin post-grade flow for feedback/looping
+          if ((insertedRow as any)?.id) {
+            handlePostGrade((insertedRow as any).id as number, questionId as unknown as number, answerText);
           }
         }
       }
@@ -399,9 +805,8 @@ export default function VoiceTest() {
       const fallback = (model.ctx.transcript || '').trim();
       console.log('⏱️ Fallback submit with transcript:', fallback);
       if (fallback) {
-        // Save answer then submit to the model
-        saveAnswerToDB(fallback);
-        handleUserSubmit(fallback);
+        // Save answer and do grading/feedback flow only
+        processSubmittedAnswer(fallback);
       } else {
         console.log('⚠️ No transcript available after timeout; resetting to idle');
         dispatch({ type: 'USER_STOP' });
@@ -443,9 +848,8 @@ export default function VoiceTest() {
       clearTimeout(endFallbackTimerRef.current);
       endFallbackTimerRef.current = null;
     }
-    // Save answer then submit to the model
-    saveAnswerToDB(finalText);
-    handleUserSubmit(finalText);
+    // Save answer and do grading/feedback flow only
+    processSubmittedAnswer(finalText);
   }, [model.ctx.transcript]);
 
   const clearConversation = () => setMessages([]);
@@ -463,8 +867,18 @@ export default function VoiceTest() {
   return (
     <main className="p-6">
       <div className="flex flex-col gap-6">
-        <div className="flex items-center justify-between">
-          <h1 className="text-2xl font-bold">Prompted</h1>
+        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+          <div className="flex flex-col gap-2">
+            <h1 className="text-2xl font-bold">
+              Answer Interview Questions by pressing the 'Ask Interview Question' button
+            </h1>
+            <h3 className="text-lg font-bold">
+              You can answer questions by speaking into the microphone, or by typing in the text box below.
+            </h3>
+            <h3 className="text-lg font-bold">
+              Your answer will be scored by an Edge Function that computes the cosine similarity between your answer and the model's response. The model will respond with a score between 0 and 100, and provide feedback on how to improve your answer.
+            </h3>
+          </div>
           <div className="flex items-center gap-4">
             <label className="flex items-center gap-2 text-sm">
               <input
@@ -483,28 +897,30 @@ export default function VoiceTest() {
         </div>
 
         <div className="rounded-xl border bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
-          <div className="mb-3 flex items-center gap-2 text-sm text-zinc-500">
-            <MessageCircle className="h-4 w-4" />
-            <span>Conversation</span>
-            <Badge 
-              variant="outline" 
-              className={`ml-auto ${
-                model.state === 'listening' ? 'bg-green-100 text-green-800 dark:bg-green-900 dark:text-green-200' :
-                model.state === 'speaking' ? 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200' :
-                model.state === 'processing' ? 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200' :
-                'bg-gray-100 text-gray-800 dark:bg-gray-900 dark:text-gray-200'
-              }`}
-            >
-              {model.state === 'listening' ? 'Listening...' :
-               model.state === 'speaking' ? 'Speaking...' :
-               model.state === 'processing' ? 'Processing...' :
-               'Ready'}
-            </Badge>
-          </div>
+            <div className="mb-3 flex items-center gap-2 text-sm text-zinc-500">
+              <MessageCircle className="h-4 w-4" />
+              <span>Conversation</span>
+              <Badge 
+                variant="outline" 
+                className={`ml-auto ${
+                  (model.state === 'listening' || model.state === 'speaking')
+                    ? 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200'
+                    : model.state === 'processing'
+                      ? 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200'
+                      : 'bg-gray-100 text-gray-800 dark:bg-gray-900 dark:text-gray-200'
+                }`}
+              >
+                {(model.state === 'listening' || model.state === 'speaking')
+                  ? 'Waiting...'
+                  : model.state === 'processing'
+                    ? 'Processing...'
+                    : 'Ready'}
+              </Badge>
+            </div>
 
           <div className="flex max-h-72 flex-col gap-3 overflow-y-auto rounded-lg bg-zinc-50 p-3 dark:bg-zinc-800/40">
             {messages.length === 0 ? (
-              <p className="text-sm text-zinc-500">Click the microphone button to start speaking, or type a message below…</p>
+              <p className="text-sm text-zinc-500">Click the 'Ask Interview Question' button to start the conversation.</p>
             ) : (
               messages.map((m) => (
                 <div key={m.id} className={`flex ${m.type === 'user' ? 'justify-end' : 'justify-start'}`}>
@@ -538,15 +954,35 @@ export default function VoiceTest() {
               value={inputText}
               onChange={(e) => setInputText(e.target.value)}
               onKeyDown={(e) => {
-                if (e.key === 'Enter') handleUserSubmit(inputText.trim());
+                if (e.key === 'Enter') processSubmittedAnswer(inputText);
               }}
             />
             <button
               className="rounded-md bg-zinc-900 px-3 py-2 text-sm text-white dark:bg-zinc-100 dark:text-zinc-900"
-              onClick={() => handleUserSubmit(inputText.trim())}
+              onClick={() => processSubmittedAnswer(inputText)}
             >
               Send
             </button>
+
+            <select
+              className="rounded-md border px-3 py-2 text-sm dark:border-zinc-800 dark:bg-zinc-900"
+              value={selectedCategoryId}
+              onChange={(e) => {
+                console.log('[prompted] User selected categoryId:', e.target.value);
+                setSelectedCategoryId(e.target.value);
+              }}
+              aria-label="Question category"
+            >
+              {loadingCategories && <option value="" disabled>Loading…</option>}
+              {!loadingCategories && categories.length === 0 && (
+                <option value="" disabled>No categories</option>
+              )}
+              {!loadingCategories && categories.map((c) => (
+                <option key={c.id} value={String(c.id)}>
+                  {c.name}
+                </option>
+              ))}
+            </select>
 
             <button
               className="rounded-md border px-3 py-2 text-sm dark:border-zinc-800"

@@ -31,6 +31,7 @@ if not env_loaded:
 # Supabase configuration
 url: str = os.environ.get("NEXT_PUBLIC_SUPABASE_URL")
 key: str = os.environ.get("NEXT_PUBLIC_SUPABASE_ANON_KEY")
+print(f"Using Supabase URL: {url}")
 
 if not url or not key:
     print(f"Missing environment variables:")
@@ -63,7 +64,30 @@ def parse_vector(v):
             return [float(x) for x in v.split(",") if x]
     if isinstance(v, list):
         return [float(x) for x in v]
+    if isinstance(v, dict):
+        # Handle possible wrappers like { "data": [..] } or { "vector": [..] }
+        for k in ("data", "vector", "embedding", "value"):
+            if k in v:
+                return parse_vector(v[k])
     return []
+
+
+def resolve_embedding(row: dict, *keys: str):
+    """Return (vector, key_used) where vector is the first non-empty parsed embedding for given keys."""
+    for k in keys:
+        if k in row and row[k] is not None:
+            vec = parse_vector(row[k])
+            if vec:
+                return vec, k
+    return [], None
+
+
+def vec_head(vec, n=2):
+    try:
+        head = [float(vec[i]) for i in range(min(n, len(vec)))]
+    except Exception:
+        head = []
+    return f"[{', '.join(f'{x:.4f}' for x in head)}]"
 
 def cosine_similarity(a, b):
     """Compute cosine similarity between two vectors."""
@@ -80,13 +104,21 @@ def update_grades():
     try:
         # 1. Fetch answers with related question embeddings using REST API
         # Only get rows where answer_text is not null and grade is null
+        # Select only the row with the highest id
         query_url = f"{url}/rest/v1/answers_table"
+        # Keep selection minimal to avoid 400s from unknown columns
+        # Assumes `embedding` exists on both answers_table and questions_table.
         params = {
-            "select": "id,embedding,answer_text,questions_table(id,embedding)",
+            "select": "id,question_id,answer_text,embedding,questions_table(id,embedding)",
             "answer_text": "not.is.null",
-            "grade": "is.null"
+            "grade": "is.null",
+            "order": "id.desc",
+            "limit": "1"
         }
         
+        print("Fetching answers needing grades ...")
+        print(f"GET {query_url}")
+        print(f"params: {params}")
         response = requests.get(query_url, headers=headers, params=params)
         response.raise_for_status()
         
@@ -94,28 +126,85 @@ def update_grades():
         if not data:
             print("No data found")
             return
+        print(f"Fetched {len(data)} answer candidate(s)")
 
         # 2. Loop over rows
         for row in data:
-            answer_vec = parse_vector(row["embedding"])
-            question_vec = parse_vector(row["questions_table"]["embedding"])
+            rid = row.get("id")
+            qid = row.get("question_id")
+            atxt = row.get("answer_text") or ""
+            print(f"\nProcessing answer_id={rid} question_id={qid} answer_len={len(atxt)}")
 
-            if not answer_vec or not question_vec:
-                print(f"Invalid embedding format for answer_id={row['id']}")
+            # 2a. Resolve answer embedding from likely keys
+            answer_vec, answer_key = resolve_embedding(
+                row,
+                "embedding",
+                "answer_embedding",
+                "vector",
+                "answer_vector",
+            )
+            if answer_vec:
+                print(f"Answer embedding from '{answer_key}' dims={len(answer_vec)} head={vec_head(answer_vec)}")
+            else:
+                print("Answer embedding not found in row")
+
+            # 2b. Resolve question embedding from nested relation first
+            qrel = row.get("questions_table") or {}
+            question_vec, question_key = resolve_embedding(
+                qrel,
+                "embedding",
+                "question_embedding",
+                "vector",
+                "question_vector",
+            )
+            if question_vec:
+                print(f"Question embedding from join key='{question_key}' dims={len(question_vec)} head={vec_head(question_vec)}")
+            else:
+                print("Question embedding missing in join; attempting direct fetch …")
+
+            # 2c. If still missing question_vec, try fetching directly by question_id
+            if (not question_vec) and row.get("question_id"):
+                try:
+                    q_url = f"{url}/rest/v1/questions_table"
+                    q_params = {
+                        "select": "id,embedding",
+                        "id": f"eq.{row['question_id']}"
+                    }
+                    print(f"GET {q_url} params={q_params}")
+                    q_resp = requests.get(q_url, headers=headers, params=q_params)
+                    q_resp.raise_for_status()
+                    q_data = q_resp.json()
+                    print(f"Fetched {len(q_data) if isinstance(q_data, list) else 'non-list'} question row(s)")
+                    if isinstance(q_data, list) and q_data:
+                        question_vec, question_key = resolve_embedding(q_data[0], "embedding")
+                        if question_vec:
+                            print(f"Question embedding from direct fetch dims={len(question_vec)} head={vec_head(question_vec)}")
+                except Exception as qe:
+                    print(f"Failed to fetch question embedding for question_id={row.get('question_id')}: {qe}")
+
+            if not answer_vec:
+                print(f"Invalid or missing answer embedding for answer_id={row['id']}")
+                continue
+            if not question_vec:
+                print(f"Invalid or missing question embedding for answer_id={row['id']} (question_id={row.get('question_id')})")
                 continue
 
+            print("Computing cosine similarity …")
+            print(f"answer dims={len(answer_vec)} head={vec_head(answer_vec)}")
+            print(f"question dims={len(question_vec)} head={vec_head(question_vec)}")
             similarity = cosine_similarity(answer_vec, question_vec)
             if not math.isfinite(similarity):
                 print(f"Similarity invalid (NaN/Inf) for answer_id={row['id']}")
                 continue
 
             grade = round(similarity * 100)
+            print(f"Computed grade={grade} for answer_id={row['id']}")
 
             # 3. Update grade back into answers_table using REST API
             update_url = f"{url}/rest/v1/answers_table"
             update_data = {"grade": grade}
             update_params = {"id": f"eq.{row['id']}"}
-            
+            print(f"PATCH {update_url} params={update_params} body={update_data}")
             update_resp = requests.patch(update_url, headers=headers, params=update_params, json=update_data)
             update_resp.raise_for_status()
 

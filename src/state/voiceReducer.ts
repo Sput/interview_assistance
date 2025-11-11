@@ -3,12 +3,13 @@ import type { VoiceEvent, VoiceState } from '@/types/voice';
 export type VoiceContext = {
   interim: string;
   transcript: string; // accumulated finals
+  blocked?: boolean; // mic permission blocked
 };
 export type VoiceModel = { state: VoiceState; ctx: VoiceContext };
 
 export const initialVoiceModel: VoiceModel = {
   state: 'idle',
-  ctx: { interim: '', transcript: '' },
+  ctx: { interim: '', transcript: '', blocked: false },
 };
 
 export function voiceReducer(model: VoiceModel, evt: VoiceEvent): VoiceModel {
@@ -17,20 +18,26 @@ export function voiceReducer(model: VoiceModel, evt: VoiceEvent): VoiceModel {
 
   switch (evt.type) {
     case 'USER_TAP_MIC':
-      return { state: 'listening', ctx: { ...ctx, interim: '' } };
+      return { state: 'listening', ctx: { ...ctx, interim: '', blocked: false } };
 
     case 'ASR_STARTED':
-      return { state: 'listening', ctx };
+      return { state: 'listening', ctx: { ...ctx, blocked: false } };
 
     case 'ASR_INTERIM':
       if (state !== 'listening') return model;
       return { state, ctx: { ...ctx, interim: evt.text } };
 
     case 'ASR_FINAL':
-      // append and clear interim
+      // Append to transcript but keep listening; do not auto-switch to processing.
       return {
-        state: 'processing', // move to processing when we have a final chunk
+        state: 'listening',
         ctx: { interim: '', transcript: (ctx.transcript + ' ' + evt.text).trim() },
+      };
+
+    case 'ASR_BLOCKED':
+      return {
+        state: 'idle',
+        ctx: { interim: '', transcript: '', blocked: true },
       };
 
     case 'PROCESS_BEGIN':
@@ -53,7 +60,7 @@ export function voiceReducer(model: VoiceModel, evt: VoiceEvent): VoiceModel {
       return { state: state === 'listening' ? 'listening' : state, ctx };
 
     case 'USER_STOP':
-      return { state: 'idle', ctx: { interim: '', transcript: '' } };
+      return { state: 'idle', ctx: { interim: '', transcript: '', blocked: false } };
 
     default:
       return model;

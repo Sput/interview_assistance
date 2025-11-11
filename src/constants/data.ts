@@ -19,67 +19,21 @@ export const navItems: NavItem[] = [
     icon: 'dashboard',
     isActive: false,
     shortcut: ['d', 'd'],
-    items: [] // Empty array as there are no child items for Dashboard
+    items: []
   },
   {
-    title: 'Finance Dashboard',
-    url: '/dashboard/finance-dashboard',
-    icon: 'dashboard',
-    isActive: false,
-    shortcut: ['f', 'd'],
-    items: [] // No child items
-  },
-  {
-    title: 'Product',
-    url: '/dashboard/product',
-    icon: 'product',
-    shortcut: ['p', 'p'],
-    isActive: false,
-    items: [] // No child items
-  },
-  {
-    title: 'Account',
-    url: '#', // Placeholder as there is no direct link for the parent
-    icon: 'billing',
-    isActive: true,
-
-    items: [
-      {
-        title: 'Profile',
-        url: '/dashboard/profile',
-        icon: 'userPen',
-        shortcut: ['m', 'm']
-      },
-      {
-        title: 'Login',
-        shortcut: ['l', 'l'],
-        url: '/',
-        icon: 'login'
-      }
-    ]
-  },
-  {
-    title: 'Kanban',
-    url: '/dashboard/kanban',
-    icon: 'kanban',
-    shortcut: ['k', 'k'],
-    isActive: false,
-    items: [] // No child items
-  }
-  ,
-  {
-    title: 'Chat',
-    url: '/chat',
-    icon: 'help', // using help icon as a '?' indicator for a new page
-    shortcut: ['c', 'c'],
+    title: 'Add Question',
+    url: '/dashboard/add_question',
+    icon: 'add',
+    shortcut: ['a', 'q'],
     isActive: false,
     items: []
   },
   {
-    title: 'Voice Test',
-    url: '/voice-test',
+    title: 'Prompted',
+    url: '/dashboard/prompted',
     icon: 'microphone',
-    shortcut: ['v', 't'],
+    shortcut: ['p', 'r'],
     isActive: false,
     items: []
   }

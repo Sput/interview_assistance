@@ -13,6 +13,7 @@ CREATE TABLE questions_table (
     id SERIAL PRIMARY KEY,
     interview_question TEXT NOT NULL,
     model_answer TEXT,
+    category TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
 );

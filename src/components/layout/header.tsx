@@ -17,7 +17,7 @@ export default function Header() {
         <Breadcrumbs />
       </div>
 
-      <div className='flex items-center gap-2 px-4'>
+      {/* <div className='flex items-center gap-2 px-4'>
         <CtaGithub />
         <div className='hidden md:flex'>
           <SearchInput />
@@ -25,7 +25,7 @@ export default function Header() {
         <UserNav />
         <ModeToggle />
         <ThemeSelector />
-      </div>
+      </div> */}
     </header>
   );
 }

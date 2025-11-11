@@ -28,6 +28,8 @@ export default function VoiceTest() {
 
   // Messages and input
   const [messages, setMessages] = useState<Message[]>([]);
+  const [currentUserMsgId, setCurrentUserMsgId] = useState<string | null>(null);
+  const lastLiveTextRef = useRef('');
   const [inputText, setInputText] = useState('');
 
   const [autoResumeAfterTTS, setAutoResumeAfterTTS] = useState(true);
@@ -46,7 +48,14 @@ export default function VoiceTest() {
 
   useEffect(() => {
     // Interim updates
-    if (interim) dispatch({ type: 'ASR_INTERIM', text: interim });
+    if (interim) {
+      dispatch({ type: 'ASR_INTERIM', text: interim });
+      // Update live bubble text and keep it pinned
+      if (currentUserMsgId) {
+        lastLiveTextRef.current = interim;
+        setMessages((prev) => prev.map((m) => (m.id === currentUserMsgId ? { ...m, text: interim } : m)));
+      }
+    }
   }, [interim]);
 
   useEffect(() => {
@@ -55,6 +64,12 @@ export default function VoiceTest() {
       const newChunks = chunks.slice(prevChunksLen.current);
       for (const c of newChunks) {
         dispatch({ type: 'ASR_FINAL', text: c });
+        if (currentUserMsgId) {
+          // Update live bubble with accumulated transcript so it doesn't disappear
+          const next = ((model.ctx.transcript + ' ' + c).trim());
+          lastLiveTextRef.current = next;
+          setMessages((prev) => prev.map((m) => (m.id === currentUserMsgId ? { ...m, text: next } : m)));
+        }
       }
     }
     prevChunksLen.current = chunks.length;
@@ -114,13 +129,40 @@ export default function VoiceTest() {
   // When user stops listening, submit the accumulated transcript
   const handleStopListening = () => {
     stop();
-    // submit model.ctx.transcript (reflects finals via reducer)
-    const finalText = model.ctx.transcript || transcript || '';
-    if (finalText.trim()) {
-      handleUserSubmit(finalText.trim());
+    const finalText = (model.ctx.transcript || transcript || lastLiveTextRef.current || '').trim();
+    if (finalText) {
+      // Submit using existing live bubble
+      const assistantId = `${Date.now()}-assistant`;
+      if (currentUserMsgId) {
+        setMessages((prev) => prev.map((m) => (m.id === currentUserMsgId ? { ...m, text: finalText } : m)));
+      } else {
+        const id = `${Date.now()}-user-live`;
+        setMessages((p) => [...p, { id, text: finalText, type: 'user' }]);
+      }
+      setMessages((p) => [...p, { id: assistantId, text: '', type: 'assistant' }]);
+
+      let full = '';
+      send(
+        finalText,
+        (delta: string) => {
+          full += delta;
+          setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, text: m.text + delta } : m)));
+        },
+        conversationIdRef.current ?? undefined
+      )
+        .then(() => {
+          if (full) speakText(full);
+        })
+        .catch((err) => {
+          console.error('Chat error', err);
+          setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, text: '\n[Error generating response]' } : m)));
+        })
+        .finally(() => {
+          setCurrentUserMsgId(null);
+          lastLiveTextRef.current = '';
+        });
     }
     dispatch({ type: 'USER_STOP' });
-    // reset ASR hook finals
     clearASR();
     prevChunksLen.current = 0;
   };
@@ -128,6 +170,10 @@ export default function VoiceTest() {
   const handleStartListening = () => {
     dispatch({ type: 'USER_TAP_MIC' });
     start();
+    const id = `${Date.now()}-user-live`;
+    setMessages((p) => [...p, { id, text: '', type: 'user' }]);
+    setCurrentUserMsgId(id);
+    lastLiveTextRef.current = '';
   };
 
   const clearConversation = () => setMessages([]);
@@ -135,6 +181,11 @@ export default function VoiceTest() {
   return (
     <main className="p-6">
       <div className="flex flex-col gap-6">
+        {model.ctx.blocked && (
+          <div className="rounded-md border border-red-300 bg-red-50 p-3 text-sm text-red-800 dark:border-red-700 dark:bg-red-900/30 dark:text-red-200">
+            Microphone access is blocked. You can continue using the text box below, or enable mic access in your browser settings and reload.
+          </div>
+        )}
         <div className="flex items-center justify-between">
           <h1 className="text-2xl font-bold">Voice Test</h1>
           <div className="flex items-center gap-2 text-sm text-zinc-500">
@@ -171,14 +222,7 @@ export default function VoiceTest() {
               ))
             )}
 
-            {/* Interim bubble while listening */}
-            {model.state === 'listening' && model.ctx.interim && (
-              <div className="flex justify-end">
-                <div className="max-w-[75%] rounded-lg bg-blue-600 px-3 py-2 text-sm text-white opacity-80">
-                  {model.ctx.interim}
-                </div>
-              </div>
-            )}
+            {/* Live bubble is now part of messages and updated in place */}
           </div>
 
           <div className="mt-3 flex items-center gap-2">

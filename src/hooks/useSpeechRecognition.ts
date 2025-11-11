@@ -29,7 +29,14 @@ export function useSpeechRecognition(
       return;
     }
     dispatch({ type: 'ASR_STARTED' });
-    controlRef.current = startChromeRecognition(onTranscript, { lang });
+    controlRef.current = startChromeRecognition(onTranscript, {
+      lang,
+      onError: (code) => {
+        if (code === 'not-allowed') {
+          dispatch({ type: 'ASR_BLOCKED', reason: code });
+        }
+      },
+    });
     console.log('✅ Speech recognition started');
   }, [dispatch, lang, onTranscript]);
 

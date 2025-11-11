@@ -25,6 +25,8 @@ export default function VoiceTest() {
   // Messages and input
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputText, setInputText] = useState('');
+  const [currentUserMsgId, setCurrentUserMsgId] = useState<string | null>(null);
+  const lastLiveTextRef = useRef('');
 
   const [autoResumeAfterTTS, setAutoResumeAfterTTS] = useState(true);
   const [isListening, setIsListening] = useState(false);
@@ -129,6 +131,42 @@ export default function VoiceTest() {
     }
   };
 
+  // Submit using the existing live user bubble (do not create a new one)
+  const submitFromLiveBubble = async (finalText: string) => {
+    const text = finalText.trim();
+    if (!text) return;
+    if (currentUserMsgId) {
+      setMessages((prev) => prev.map((m) => (m.id === currentUserMsgId ? { ...m, text } : m)));
+    }
+    const assistantId = `${Date.now()}-assistant`;
+    setMessages((p) => [...p, { id: assistantId, text: '', type: 'assistant' }]);
+
+    let full = '';
+    try {
+      dispatch({ type: 'PROCESS_BEGIN' });
+      await send(
+        text,
+        (delta: string) => {
+          full += delta;
+          setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, text: m.text + delta } : m)));
+        },
+        conversationIdRef.current ?? undefined
+      );
+      if (full) speakText(full);
+    } catch (err) {
+      console.error('❌ Chat error:', err);
+      setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, text: '\n[Error generating response]' } : m)));
+      dispatch({ type: 'USER_STOP' });
+      return;
+    } finally {
+      if (!autoResumeAfterTTS || !conversationActiveRef.current || !full) {
+        dispatch({ type: 'USER_STOP' });
+      }
+      setCurrentUserMsgId(null);
+      lastLiveTextRef.current = '';
+    }
+  };
+
   // When user stops listening, submit the accumulated transcript
   const handleStopListening = () => {
     console.log('🎤 User stopped listening');
@@ -139,10 +177,10 @@ export default function VoiceTest() {
     if (endFallbackTimerRef.current) clearTimeout(endFallbackTimerRef.current);
     endFallbackTimerRef.current = setTimeout(() => {
       if (!awaitingFinalRef.current) return; // already handled by final event
-      const fallback = (model.ctx.transcript || '').trim();
+      const fallback = (model.ctx.transcript || lastLiveTextRef.current || '').trim();
       console.log('⏱️ Fallback submit with transcript:', fallback);
       if (fallback) {
-        handleUserSubmit(fallback);
+        submitFromLiveBubble(fallback);
       } else {
         console.log('⚠️ No transcript available after timeout; resetting to idle');
         dispatch({ type: 'USER_STOP' });
@@ -159,6 +197,11 @@ export default function VoiceTest() {
     setIsListening(true);
     setConversationActive(true);
     conversationActiveRef.current = true;
+    // Create or reuse a live user bubble
+    const id = `${Date.now()}-user-live`;
+    setMessages((p) => [...p, { id, text: '', type: 'user' }]);
+    setCurrentUserMsgId(id);
+    lastLiveTextRef.current = '';
   };
 
   // Auto-resume listening after TTS completes (only if auto-resume is enabled)
@@ -184,10 +227,23 @@ export default function VoiceTest() {
       clearTimeout(endFallbackTimerRef.current);
       endFallbackTimerRef.current = null;
     }
-    handleUserSubmit(finalText);
+    submitFromLiveBubble(finalText);
   }, [model.ctx.transcript]);
 
-  const clearConversation = () => setMessages([]);
+  // Keep the live bubble text pinned during pauses
+  useEffect(() => {
+    if (!isListening || !currentUserMsgId) return;
+    const live = (model.ctx.interim || model.ctx.transcript || '').trim();
+    if (!live) return; // don't clear on silence
+    lastLiveTextRef.current = live;
+    setMessages((prev) => prev.map((m) => (m.id === currentUserMsgId ? { ...m, text: live } : m)));
+  }, [model.ctx.interim, model.ctx.transcript, isListening, currentUserMsgId]);
+
+  const clearConversation = () => {
+    setMessages([]);
+    setCurrentUserMsgId(null);
+    lastLiveTextRef.current = '';
+  };
 
   const handleEndConversation = () => {
     console.log('🛑 Ending conversation');
@@ -197,11 +253,18 @@ export default function VoiceTest() {
     conversationActiveRef.current = false;
     dispatch({ type: 'USER_STOP' });
     prevChunksLen.current = 0;
+    setCurrentUserMsgId(null);
+    lastLiveTextRef.current = '';
   };
 
   return (
     <main className="p-6">
       <div className="flex flex-col gap-6">
+        {model.ctx.blocked && (
+          <div className="rounded-md border border-red-300 bg-red-50 p-3 text-sm text-red-800 dark:border-red-700 dark:bg-red-900/30 dark:text-red-200">
+            Microphone access is blocked. You can continue using the text box below, or enable mic access in your browser settings and reload.
+          </div>
+        )}
         <div className="flex items-center justify-between">
           <h1 className="text-2xl font-bold">Voice Test</h1>
           <div className="flex items-center gap-4">
@@ -260,14 +323,7 @@ export default function VoiceTest() {
               ))
             )}
 
-            {/* Interim bubble while listening */}
-            {model.state === 'listening' && model.ctx.interim && (
-              <div className="flex justify-end">
-                <div className="max-w-[75%] rounded-lg bg-blue-600 px-3 py-2 text-sm text-white opacity-80">
-                  {model.ctx.interim}
-                </div>
-              </div>
-            )}
+            {/* Live bubble is now part of messages and updated in place */}
           </div>
 
           <div className="mt-3 flex items-center gap-2">
