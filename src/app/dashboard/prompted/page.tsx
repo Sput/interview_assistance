@@ -487,21 +487,16 @@ export default function VoiceTest() {
       // Track the last asked question id
       lastQuestionIdRef.current = row.id ?? null;
 
-      // Best-effort: ensure the question has an embedding generated
+      // Best-effort: ensure the question has an embedding generated (via server proxy to avoid CORS)
       try {
-        const supabase = createClient();
-        const { data: sess } = await supabase.auth.getSession();
-        const authHeader = sess?.session?.access_token
-          ? { Authorization: `Bearer ${sess.session.access_token}` }
-          : (process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-              ? { Authorization: `Bearer ${process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY}` }
-              : {});
-        const { error: vecErr } = await supabase.functions.invoke('make_vectors', {
-          headers: authHeader,
-          body: { question_id: row.id },
+        const res = await fetch('/api/proxy-function', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'make_vectors', payload: { question_id: row.id } }),
         });
-        if (vecErr) {
-          console.warn('make_vectors invocation failed (question path):', vecErr);
+        if (!res.ok) {
+          const details = await res.json().catch(() => ({} as any));
+          console.warn('make_vectors proxy failed:', res.status, details);
         }
       } catch (makeVecErr) {
         console.warn('make_vectors invocation threw (question path):', makeVecErr);
@@ -568,25 +563,20 @@ export default function VoiceTest() {
   // Save the user's answer to Supabase answers_table
   const saveAnswerToDB = async (answerText: string) => {
     const MIN_CHARS = 300;
-    // Helper to trigger cosine similarity grading via Supabase Edge Function
+    // Helper to trigger cosine similarity grading via server proxy (avoids CORS)
     const runCosineSimilarity = async () => {
       try {
-        const supabase = createClient();
-        const { data: sess } = await supabase.auth.getSession();
-        const authHeader = sess?.session?.access_token
-          ? { Authorization: `Bearer ${sess.session.access_token}` }
-          : (process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-              ? { Authorization: `Bearer ${process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY}` }
-              : {});
-        const { error } = await supabase.functions.invoke('calc_cos_similarity', {
-          headers: authHeader,
-          body: {},
+        const resp = await fetch('/api/proxy-function', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name: 'calc_cos_similarity', payload: {} }),
         });
-        if (error) {
-          console.error('Failed to invoke calc_cos_similarity function:', error);
+        if (!resp.ok) {
+          const details = await resp.json().catch(() => ({} as any));
+          console.error('calc_cos_similarity proxy failed:', resp.status, details);
         }
       } catch (e) {
-        console.error('Error invoking calc_cos_similarity function:', e);
+        console.error('Error invoking calc_cos_similarity via proxy:', e);
       }
     };
 
@@ -722,22 +712,24 @@ export default function VoiceTest() {
               console.error('Failed to set short-answer grade:', gradeErr);
             }
           } else {
-            // Fire edge function for vectorization (best-effort)
+            // Fire edge function for vectorization (best-effort) via server proxy
             try {
-              const { data: sess } = await supabase.auth.getSession();
-              const authHeader = sess?.session?.access_token
-                ? { Authorization: `Bearer ${sess.session.access_token}` }
-                : (process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-                    ? { Authorization: `Bearer ${process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY}` }
-                    : {});
-              await supabase.functions.invoke('answer_vectors', {
-                headers: authHeader,
-                body: {
-                  answer_id: lastAnswerIdRef.current,
-                  question_id: questionId,
-                  user_id: userId,
-                },
+              const resp = await fetch('/api/proxy-function', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  name: 'answer_vectors',
+                  payload: {
+                    answer_id: lastAnswerIdRef.current,
+                    question_id: questionId,
+                    user_id: userId,
+                  },
+                }),
               });
+              if (!resp.ok) {
+                const details = await resp.json().catch(() => ({} as any));
+                console.error('answer_vectors proxy failed (update):', resp.status, details);
+              }
             } catch (fnErr) {
               console.error('answer_vectors invocation failed (update path):', fnErr);
             }
@@ -781,22 +773,24 @@ export default function VoiceTest() {
               console.error('Failed to set short-answer grade:', gradeErr);
             }
           } else {
-            // Fire edge function for vectorization (best-effort)
+            // Fire edge function for vectorization (best-effort) via server proxy
             try {
-              const { data: sess } = await supabase.auth.getSession();
-              const authHeader = sess?.session?.access_token
-                ? { Authorization: `Bearer ${sess.session.access_token}` }
-                : (process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
-                    ? { Authorization: `Bearer ${process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY}` }
-                    : {});
-              await supabase.functions.invoke('answer_vectors', {
-                headers: authHeader,
-                body: {
-                  answer_id: newId,
-                  question_id: questionId,
-                  user_id: userId,
-                },
+              const resp = await fetch('/api/proxy-function', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                  name: 'answer_vectors',
+                  payload: {
+                    answer_id: newId,
+                    question_id: questionId,
+                    user_id: userId,
+                  },
+                }),
               });
+              if (!resp.ok) {
+                const details = await resp.json().catch(() => ({} as any));
+                console.error('answer_vectors proxy failed (insert):', resp.status, details);
+              }
             } catch (fnErr) {
               console.error('answer_vectors invocation failed (insert path):', fnErr);
             }
