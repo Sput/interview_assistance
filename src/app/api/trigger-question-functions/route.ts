@@ -20,6 +20,21 @@ export async function POST(req: NextRequest) {
       process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
     );
 
+    // Prepare Authorization header for invoking protected Edge Functions
+    let authHeader: Record<string, string> = {};
+    try {
+      const { cookies } = await import('next/headers');
+      const cookieStore = await cookies();
+      const accessToken = cookieStore.get('sb-access-token')?.value;
+      if (accessToken) {
+        authHeader = { Authorization: `Bearer ${accessToken}` };
+      } else if (process.env.SUPABASE_SERVICE_ROLE_KEY) {
+        authHeader = { Authorization: `Bearer ${process.env.SUPABASE_SERVICE_ROLE_KEY}` };
+      } else if (process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) {
+        authHeader = { Authorization: `Bearer ${process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY}` };
+      }
+    } catch (_) {}
+
     const results = {
       populate_model_answer: null,
       make_vectors: null,
@@ -54,7 +69,7 @@ export async function POST(req: NextRequest) {
       const startTime = Date.now();
       const { data: popData, error: popError } = await supabase.functions.invoke(
         'populate_model_answer',
-        { body: { question_id } }
+        { headers: authHeader, body: { question_id } }
       );
       const elapsed = Date.now() - startTime;
       console.log(`⏱️ populate_model_answer took ${elapsed}ms`);
@@ -114,7 +129,7 @@ export async function POST(req: NextRequest) {
       const startTime = Date.now();
       const { data: vecData, error: vecError } = await supabase.functions.invoke(
         'make_vectors',
-        { body: { question_id } }
+        { headers: authHeader, body: { question_id } }
       );
       const elapsed = Date.now() - startTime;
       console.log(`⏱️ make_vectors took ${elapsed}ms`);

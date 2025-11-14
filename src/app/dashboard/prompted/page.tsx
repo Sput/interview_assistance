@@ -489,7 +489,15 @@ export default function VoiceTest() {
 
       // Best-effort: ensure the question has an embedding generated
       try {
-        const { error: vecErr } = await createClient().functions.invoke('make_vectors', {
+        const supabase = createClient();
+        const { data: sess } = await supabase.auth.getSession();
+        const authHeader = sess?.session?.access_token
+          ? { Authorization: `Bearer ${sess.session.access_token}` }
+          : (process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+              ? { Authorization: `Bearer ${process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY}` }
+              : {});
+        const { error: vecErr } = await supabase.functions.invoke('make_vectors', {
+          headers: authHeader,
           body: { question_id: row.id },
         });
         if (vecErr) {
@@ -560,26 +568,25 @@ export default function VoiceTest() {
   // Save the user's answer to Supabase answers_table
   const saveAnswerToDB = async (answerText: string) => {
     const MIN_CHARS = 300;
-    // Helper to trigger cosine similarity script after saving
+    // Helper to trigger cosine similarity grading via Supabase Edge Function
     const runCosineSimilarity = async () => {
       try {
-        const res = await fetch('/api/python', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            action: 'run_script',
-            script: 'calc_cos_similar.py',
-            data: { args: [] },
-          }),
+        const supabase = createClient();
+        const { data: sess } = await supabase.auth.getSession();
+        const authHeader = sess?.session?.access_token
+          ? { Authorization: `Bearer ${sess.session.access_token}` }
+          : (process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+              ? { Authorization: `Bearer ${process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY}` }
+              : {});
+        const { error } = await supabase.functions.invoke('calc_cos_similarity', {
+          headers: authHeader,
+          body: {},
         });
-        if (!res.ok) {
-          console.error('Failed to trigger calc_cos_similar.py:', res.status, res.statusText);
-        } else {
-          const payload = await res.json().catch(() => null);
-          console.log('calc_cos_similar.py response:', payload);
+        if (error) {
+          console.error('Failed to invoke calc_cos_similarity function:', error);
         }
       } catch (e) {
-        console.error('Error calling /api/python for calc_cos_similar.py:', e);
+        console.error('Error invoking calc_cos_similarity function:', e);
       }
     };
 
@@ -717,7 +724,14 @@ export default function VoiceTest() {
           } else {
             // Fire edge function for vectorization (best-effort)
             try {
+              const { data: sess } = await supabase.auth.getSession();
+              const authHeader = sess?.session?.access_token
+                ? { Authorization: `Bearer ${sess.session.access_token}` }
+                : (process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+                    ? { Authorization: `Bearer ${process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY}` }
+                    : {});
               await supabase.functions.invoke('answer_vectors', {
+                headers: authHeader,
                 body: {
                   answer_id: lastAnswerIdRef.current,
                   question_id: questionId,
@@ -769,7 +783,14 @@ export default function VoiceTest() {
           } else {
             // Fire edge function for vectorization (best-effort)
             try {
+              const { data: sess } = await supabase.auth.getSession();
+              const authHeader = sess?.session?.access_token
+                ? { Authorization: `Bearer ${sess.session.access_token}` }
+                : (process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+                    ? { Authorization: `Bearer ${process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY}` }
+                    : {});
               await supabase.functions.invoke('answer_vectors', {
+                headers: authHeader,
                 body: {
                   answer_id: newId,
                   question_id: questionId,
