@@ -5,7 +5,7 @@ FROM node:20-bookworm-slim AS builder
 WORKDIR /app
 
 # Install dependencies first for better layer caching
-COPY package*.json ./
+COPY package*.json .npmrc ./
 RUN npm ci
 
 # Copy source and build
@@ -37,4 +37,3 @@ COPY --chown=node:node --from=builder /app/public ./public
 
 EXPOSE 3000
 CMD ["node", "server.js"]
-
