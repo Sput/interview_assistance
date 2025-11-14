@@ -26,6 +26,7 @@ export default function VoiceTest() {
 
   // Messages and input
   const [messages, setMessages] = useState<Message[]>([]);
+  const [currentScore, setCurrentScore] = useState<number>(0);
   const [inputText, setInputText] = useState('');
   const [categories, setCategories] = useState<Array<{ id: number; name: string }>>([]);
   const [loadingCategories, setLoadingCategories] = useState(false);
@@ -617,6 +618,8 @@ export default function VoiceTest() {
       }
 
       console.log(`Grade for answer ${answerId}:`, grade);
+      // Update the UI card with the latest score
+      try { setCurrentScore(grade); } catch {}
       if (grade < 60) {
         // Fetch the question text and model answer
         const { data: q, error: qErr } = await supabase
@@ -1036,6 +1039,20 @@ export default function VoiceTest() {
             >
               End
             </button>
+          </div>
+        </div>
+        {/* Current Score Card below conversation */}
+        <div className="flex items-stretch gap-4">
+          <div className="rounded-xl border bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+            <div className="text-xs uppercase tracking-wide text-zinc-500">Current Score</div>
+            <div
+              className={
+                "mt-1 font-semibold text-5xl " +
+                (currentScore >= 60 ? 'text-green-600 dark:text-green-400' : 'text-red-600 dark:text-red-400')
+              }
+            >
+              {currentScore}
+            </div>
           </div>
         </div>
       </div>
