@@ -564,16 +564,27 @@ export default function VoiceTest() {
   const saveAnswerToDB = async (answerText: string) => {
     const MIN_CHARS = 300;
     // Helper to trigger cosine similarity grading via server proxy (avoids CORS)
-    const runCosineSimilarity = async () => {
+    const runCosineSimilarity = async (
+      answerId?: number | null,
+      questionId?: number | null,
+      userId?: string | null
+    ) => {
       try {
+        const payload: any = {};
+        if (answerId) payload.answer_id = answerId;
+        if (questionId) payload.question_id = questionId;
+        if (userId) payload.user_id = userId;
         const resp = await fetch('/api/proxy-function', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: 'calc_cos_similarity', payload: {} }),
+          body: JSON.stringify({ name: 'calc_cos_similarity', payload }),
         });
         if (!resp.ok) {
           const details = await resp.json().catch(() => ({} as any));
           console.error('calc_cos_similarity proxy failed:', resp.status, details);
+        } else {
+          const details = await resp.json().catch(() => null);
+          console.log('calc_cos_similarity invoked ok:', details);
         }
       } catch (e) {
         console.error('Error invoking calc_cos_similarity via proxy:', e);
@@ -594,7 +605,8 @@ export default function VoiceTest() {
       for (let attempt = 0; attempt < maxAttempts; attempt++) {
         // Occasionally re-run the script in case embeddings were late
         if (attempt === 0 || attempt === 5 || attempt === 10) {
-          runCosineSimilarity();
+          // re-trigger grading for this specific answer if needed
+          await runCosineSimilarity(answerId, questionId, undefined);
         }
         const { data, error } = await supabase
           .from('answers_table')
@@ -734,7 +746,7 @@ export default function VoiceTest() {
               console.error('answer_vectors invocation failed (update path):', fnErr);
             }
             // Best-effort: run cosine similarity grading script
-            runCosineSimilarity();
+            await runCosineSimilarity(currentAnswerId as unknown as number, questionId as unknown as number, userId ?? undefined);
           }
           // Begin post-grade flow for feedback/looping
           handlePostGrade(currentAnswerId as unknown as number, questionId as unknown as number, answerText);
@@ -795,7 +807,7 @@ export default function VoiceTest() {
               console.error('answer_vectors invocation failed (insert path):', fnErr);
             }
             // Best-effort: run cosine similarity grading script
-            runCosineSimilarity();
+            await runCosineSimilarity(newId as number, questionId as unknown as number, userId ?? undefined);
           }
           // Begin post-grade flow for feedback/looping
           if ((insertedRow as any)?.id) {
