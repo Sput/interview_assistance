@@ -47,6 +47,21 @@ export default async function RootLayout({
             `
           }}
         />
+        <script
+          // Disable any Text-to-Speech invocation globally
+          dangerouslySetInnerHTML={{
+            __html: `
+              try {
+                if ('speechSynthesis' in window) {
+                  window.speechSynthesis.cancel();
+                  window.speechSynthesis.speak = function () {
+                    try { console.warn('[tts] blocked speak()'); } catch (_) {}
+                  };
+                }
+              } catch (_) {}
+            `
+          }}
+        />
       </head>
       <body
         className={cn(

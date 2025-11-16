@@ -9,6 +9,7 @@ type InvokeBody = {
 export async function POST(req: NextRequest) {
   try {
     const { name, payload }: InvokeBody = await req.json();
+    console.log('[proxy-function] Incoming invoke:', { name, hasPayload: !!payload });
 
     if (!name || typeof name !== 'string') {
       return NextResponse.json({ error: 'Missing function name' }, { status: 400 });
@@ -29,16 +30,20 @@ export async function POST(req: NextRequest) {
 
     // Build Authorization header: prefer user JWT from cookie; else service; else anon
     let headers: Record<string, string> = {};
+    let authSource: 'user' | 'service' | 'anon' | 'none' = 'none';
     try {
       const { cookies } = await import('next/headers');
       const cookieStore = await cookies();
       const accessToken = cookieStore.get('sb-access-token')?.value;
       if (accessToken) {
         headers.Authorization = `Bearer ${accessToken}`;
+        authSource = 'user';
       } else if (service) {
         headers.Authorization = `Bearer ${service}`;
+        authSource = 'service';
       } else if (anon) {
         headers.Authorization = `Bearer ${anon}`;
+        authSource = 'anon';
       }
     } catch {}
 
@@ -46,6 +51,8 @@ export async function POST(req: NextRequest) {
       headers,
       body: payload ?? {},
     });
+
+    console.log('[proxy-function] Invoked', name, 'auth:', authSource, 'error?', !!error);
 
     if (error) {
       // Try to unwrap context details for easier debugging
@@ -71,14 +78,16 @@ export async function POST(req: NextRequest) {
           status,
           statusText,
           context: contextBody,
+          name,
+          authSource,
         },
         { status: status ?? 500 }
       );
     }
 
-    return NextResponse.json({ ok: true, data });
+    return NextResponse.json({ ok: true, name, authSource, data });
   } catch (err: any) {
+    console.error('[proxy-function] Unhandled error:', err?.message);
     return NextResponse.json({ error: err?.message || 'Server error' }, { status: 500 });
   }
 }
-

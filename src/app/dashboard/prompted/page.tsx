@@ -1,28 +1,18 @@
 'use client';
 
-import React, { useEffect, useReducer, useRef, useState } from 'react';
-import { useSpeechRecognition } from '@/hooks/useSpeechRecognition';
-import { initialVoiceModel, voiceReducer } from '@/state/voiceReducer';
+import React, { useEffect, useRef, useState } from 'react';
 // import { useChat } from '@/hooks/useChat';
 import { Badge } from '@/components/ui/badge';
 import { MessageCircle } from 'lucide-react';
-import { Mic, MicOff, Volume2 } from 'lucide-react';
+// Audio-related icons removed
 import { createClient } from '@/lib/supabase';
 
 type Message = { id: string; text: string; type: 'user' | 'assistant' };
 
 
-export default function VoiceTest() {
-  const [model, dispatch] = useReducer(voiceReducer, initialVoiceModel);
+const GRADING_ENABLED = true; // enable grading via calc_cos_similarity edge function
 
-  // ASR hook
-  const {
-    start,
-    stop,
-    pause,
-    resume,
-    isRunning,
-  } = useSpeechRecognition(dispatch, 'en-US');
+export default function VoiceTest() {
 
   // Messages and input
   const [messages, setMessages] = useState<Message[]>([]);
@@ -32,10 +22,7 @@ export default function VoiceTest() {
   const [loadingCategories, setLoadingCategories] = useState(false);
   const [selectedCategoryId, setSelectedCategoryId] = useState<string>('');
 
-  const [autoResumeAfterTTS, setAutoResumeAfterTTS] = useState(true);
-  const [isListening, setIsListening] = useState(false);
-  const [conversationActive, setConversationActive] = useState(true);
-  const speakingRef = useRef(false);
+  // Audio features removed
   const conversationActiveRef = useRef(true);
   const conversationIdRef = useRef<string | null>(null);
   const chatPrevResponseIdRef = useRef<string | null>(null);
@@ -91,44 +78,6 @@ export default function VoiceTest() {
 
   // Track previous chunks length (kept for potential future use)
   const prevChunksLen = useRef(0);
-  const awaitingFinalRef = useRef(false);
-  const endFallbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // TTS helper that pauses ASR to avoid echo and optionally resumes
-  const speakText = (text: string) => {
-    console.log('🔊 speakText called with:', text);
-    if (!('speechSynthesis' in window)) {
-      console.log('❌ Speech synthesis not supported');
-      return;
-    }
-    if (speakingRef.current) {
-      console.log('⚠️ Already speaking, skipping');
-      return;
-    }
-    if (!text) {
-      console.log('⚠️ No text to speak');
-      return;
-    }
-
-    console.log('🔇 Pausing ASR for TTS');
-    pause();
-    speakingRef.current = true;
-    dispatch({ type: 'TTS_BEGIN' });
-
-    const utter = new SpeechSynthesisUtterance(text);
-    utter.onend = () => {
-      console.log('🔊 TTS completed');
-      speakingRef.current = false;
-      dispatch({ type: 'TTS_END' });
-      if (autoResumeAfterTTS && conversationActiveRef.current) {
-        console.log('🔄 Auto-resuming ASR after TTS');
-        resume();
-      }
-    };
-
-    console.log('🔊 Starting speech synthesis');
-    window.speechSynthesis.speak(utter);
-  };
 
   // Load categories from DB and set default selection
   useEffect(() => {
@@ -190,8 +139,7 @@ export default function VoiceTest() {
 
     let full = '';
     try {
-      // Indicate we are processing a response
-      dispatch({ type: 'PROCESS_BEGIN' });
+      // Indicate we are processing a response (audio removed)
       console.log('🌐 Calling OpenAI API...');
       await sendWithChatCompletions(
         text,
@@ -204,24 +152,13 @@ export default function VoiceTest() {
       );
 
       console.log('✅ OpenAI response complete. Full response:', full);
-      // After stream completes, speak final
-      if (full) {
-        console.log('🔊 Starting TTS for response');
-        speakText(full);
-      } else {
-        console.log('⚠️ No response to speak');
-      }
+      // Audio/TTS removed — no speech output
     } catch (err) {
       console.error('❌ Chat error:', err);
       setMessages((prev) => prev.map((m) => (m.id === assistantId ? { ...m, text: '\n[Error generating response]' } : m)));
-      // Clear processing state on error
-      dispatch({ type: 'USER_STOP' });
       return;
     } finally {
-      // If not auto-resuming after TTS, conversation is inactive, or no content was returned, reset to idle
-      if (!autoResumeAfterTTS || !conversationActiveRef.current || !full) {
-        dispatch({ type: 'USER_STOP' });
-      }
+      // No audio state to manage
     }
   };
 
@@ -489,6 +426,7 @@ export default function VoiceTest() {
 
       // Best-effort: ensure the question has an embedding generated (via server proxy to avoid CORS)
       try {
+        console.log('[proxy] invoking make_vectors for question_id', row.id);
         const res = await fetch('/api/proxy-function', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -497,6 +435,9 @@ export default function VoiceTest() {
         if (!res.ok) {
           const details = await res.json().catch(() => ({} as any));
           console.warn('make_vectors proxy failed:', res.status, details);
+        } else {
+          const json = await res.json().catch(() => null);
+          console.log('make_vectors proxy ok:', json);
         }
       } catch (makeVecErr) {
         console.warn('make_vectors invocation threw (question path):', makeVecErr);
@@ -546,7 +487,6 @@ export default function VoiceTest() {
         type: 'assistant',
       };
       setMessages((prev) => [...prev, assistantMsg]);
-      speakText(question);
     } catch (e: any) {
       console.error('Unexpected error fetching question:', e?.message || e);
       setMessages((prev) => [
@@ -562,13 +502,18 @@ export default function VoiceTest() {
 
   // Save the user's answer to Supabase answers_table
   const saveAnswerToDB = async (answerText: string) => {
-    const MIN_CHARS = 300;
+    const MIN_CHARS = 50;
+    console.log('[saveAnswerToDB] length:', answerText.length, 'preview:', (answerText || '').slice(0, 100));
     // Helper to trigger cosine similarity grading via server proxy (avoids CORS)
     const runCosineSimilarity = async (
       answerId?: number | null,
       questionId?: number | null,
       userId?: string | null
     ) => {
+      if (!GRADING_ENABLED) {
+        console.warn('[grading] disabled; would invoke calc_cos_similarity with', { answerId, questionId, userId });
+        return;
+      }
       try {
         const payload: any = {};
         if (answerId) payload.answer_id = answerId;
@@ -598,6 +543,10 @@ export default function VoiceTest() {
       userAnswer: string
     ) => {
       const supabase = createClient();
+      console.log('[saveAnswerToDB] state:', {
+        questionId,
+        lastAnswerId: lastAnswerIdRef.current,
+      });
       const maxAttempts = 20;
       const delay = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -613,6 +562,7 @@ export default function VoiceTest() {
           .select('grade')
           .eq('id', answerId)
           .maybeSingle();
+        console.log('[pollGrade attempt]', attempt, { data, error });
 
         if (!error && data && data.grade !== null && data.grade !== undefined) {
           grade = data.grade as unknown as number;
@@ -665,9 +615,6 @@ export default function VoiceTest() {
         if (questionAgain) {
           const assistantMsg = { id: `${Date.now()}-iq-repeat`, text: questionAgain, type: 'assistant' as const };
           setMessages((prev) => [...prev, assistantMsg]);
-          speakText(questionAgain);
-          // Auto-resume will kick in after TTS if enabled; ensure conversation remains active
-          setConversationActive(true);
           conversationActiveRef.current = true;
         }
       } else {
@@ -677,7 +624,6 @@ export default function VoiceTest() {
           ...p,
           { id: `${Date.now()}-success`, text: successMsg, type: 'assistant' },
         ]);
-        speakText(successMsg);
       }
     };
 
@@ -726,6 +672,7 @@ export default function VoiceTest() {
           } else {
             // Fire edge function for vectorization (best-effort) via server proxy
             try {
+              console.log('[proxy] invoking answer_vectors (update) answer_id', lastAnswerIdRef.current, 'question_id', questionId, 'user_id', userId);
               const resp = await fetch('/api/proxy-function', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -741,6 +688,9 @@ export default function VoiceTest() {
               if (!resp.ok) {
                 const details = await resp.json().catch(() => ({} as any));
                 console.error('answer_vectors proxy failed (update):', resp.status, details);
+              } else {
+                const details = await resp.json().catch(() => null);
+                console.log('answer_vectors proxy ok (update):', details);
               }
             } catch (fnErr) {
               console.error('answer_vectors invocation failed (update path):', fnErr);
@@ -765,6 +715,7 @@ export default function VoiceTest() {
           .insert(payload)
           .select('id')
           .single();
+        console.log('[insertAnswer] result', { insertedRow, error });
         if (error) {
           console.error('Failed to insert answer:', {
             message: (error as any)?.message,
@@ -787,6 +738,7 @@ export default function VoiceTest() {
           } else {
             // Fire edge function for vectorization (best-effort) via server proxy
             try {
+              console.log('[proxy] invoking answer_vectors (insert) answer_id', newId, 'question_id', questionId, 'user_id', userId);
               const resp = await fetch('/api/proxy-function', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -802,6 +754,9 @@ export default function VoiceTest() {
               if (!resp.ok) {
                 const details = await resp.json().catch(() => ({} as any));
                 console.error('answer_vectors proxy failed (insert):', resp.status, details);
+              } else {
+                const details = await resp.json().catch(() => null);
+                console.log('answer_vectors proxy ok (insert):', details);
               }
             } catch (fnErr) {
               console.error('answer_vectors invocation failed (insert path):', fnErr);
@@ -820,77 +775,13 @@ export default function VoiceTest() {
     }
   };
 
-  // Ask only when user clicks the button (no auto-ask on mount)
-
-  // When user stops listening, submit the accumulated transcript
-  const handleStopListening = () => {
-    console.log('🎤 User stopped listening');
-    stop();
-    setIsListening(false);
-    // We need to wait a tick for Chrome to deliver the final result
-    awaitingFinalRef.current = true;
-    if (endFallbackTimerRef.current) clearTimeout(endFallbackTimerRef.current);
-    endFallbackTimerRef.current = setTimeout(() => {
-      if (!awaitingFinalRef.current) return; // already handled by final event
-      const fallback = (model.ctx.transcript || '').trim();
-      console.log('⏱️ Fallback submit with transcript:', fallback);
-      if (fallback) {
-        // Save answer and do grading/feedback flow only
-        processSubmittedAnswer(fallback);
-      } else {
-        console.log('⚠️ No transcript available after timeout; resetting to idle');
-        dispatch({ type: 'USER_STOP' });
-      }
-      awaitingFinalRef.current = false;
-    }, 600);
-    prevChunksLen.current = 0;
-  };
-
-  const handleStartListening = () => {
-    console.log('🎤 User started listening');
-    dispatch({ type: 'USER_TAP_MIC' });
-    start();
-    setIsListening(true);
-    setConversationActive(true);
-    conversationActiveRef.current = true;
-  };
-
-  // Auto-resume listening after TTS completes (only if auto-resume is enabled)
-  useEffect(() => {
-    if (model.state === 'idle' && autoResumeAfterTTS && messages.length > 0 && !isListening) {
-      const timer = setTimeout(() => {
-        if (conversationActive) handleStartListening();
-      }, 1000); // Wait 1 second after TTS ends
-      return () => clearTimeout(timer);
-    }
-  }, [model.state, autoResumeAfterTTS, messages.length, isListening, conversationActive]);
-
-  // Removed: auto-submit on ASR final. Submission now happens only when the user presses the button.
-
-  // When a final transcript arrives after we pressed End response, submit it
-  useEffect(() => {
-    if (!awaitingFinalRef.current) return;
-    const finalText = (model.ctx.transcript || '').trim();
-    if (!finalText) return;
-    console.log('✅ Final transcript arrived post-stop:', finalText);
-    awaitingFinalRef.current = false;
-    if (endFallbackTimerRef.current) {
-      clearTimeout(endFallbackTimerRef.current);
-      endFallbackTimerRef.current = null;
-    }
-    // Save answer and do grading/feedback flow only
-    processSubmittedAnswer(finalText);
-  }, [model.ctx.transcript]);
+  // Audio features removed: no listening controls or auto-resume
 
   const clearConversation = () => setMessages([]);
 
   const handleEndConversation = () => {
     console.log('🛑 Ending conversation');
-    stop();
-    setIsListening(false);
-    setConversationActive(false);
     conversationActiveRef.current = false;
-    dispatch({ type: 'USER_STOP' });
     prevChunksLen.current = 0;
   };
 
@@ -902,50 +793,18 @@ export default function VoiceTest() {
             <h1 className="text-2xl font-bold">
               Answer Interview Questions by pressing the 'Ask Interview Question' button
             </h1>
-            <h3 className="text-lg font-bold">
-              You can answer questions by speaking into the microphone, or by typing in the text box below.
-            </h3>
+            <h3 className="text-lg font-bold">Type your answer in the text box below.</h3>
             <h3 className="text-lg font-bold">
               Your answer will be scored by an Edge Function that computes the cosine similarity between your answer and the model's response. The model will respond with a score between 0 and 100, and provide feedback on how to improve your answer.
             </h3>
           </div>
-          <div className="flex items-center gap-4">
-            <label className="flex items-center gap-2 text-sm">
-              <input
-                type="checkbox"
-                checked={autoResumeAfterTTS}
-                onChange={(e) => setAutoResumeAfterTTS(e.target.checked)}
-                className="rounded"
-              />
-              Auto-resume listening
-            </label>
-            <div className="flex items-center gap-2 text-sm text-zinc-500">
-              <MessageCircle className="h-4 w-4" />
-              <Badge variant="outline">{model.state}</Badge>
-            </div>
-          </div>
+          {/* Audio settings removed */}
         </div>
 
         <div className="rounded-xl border bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
             <div className="mb-3 flex items-center gap-2 text-sm text-zinc-500">
               <MessageCircle className="h-4 w-4" />
               <span>Conversation</span>
-              <Badge 
-                variant="outline" 
-                className={`ml-auto ${
-                  (model.state === 'listening' || model.state === 'speaking')
-                    ? 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200'
-                    : model.state === 'processing'
-                      ? 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200'
-                      : 'bg-gray-100 text-gray-800 dark:bg-gray-900 dark:text-gray-200'
-                }`}
-              >
-                {(model.state === 'listening' || model.state === 'speaking')
-                  ? 'Waiting...'
-                  : model.state === 'processing'
-                    ? 'Processing...'
-                    : 'Ready'}
-              </Badge>
             </div>
 
           <div className="flex max-h-72 flex-col gap-3 overflow-y-auto rounded-lg bg-zinc-50 p-3 dark:bg-zinc-800/40">
@@ -967,14 +826,7 @@ export default function VoiceTest() {
               ))
             )}
 
-            {/* Interim bubble while listening */}
-            {model.state === 'listening' && model.ctx.interim && (
-              <div className="flex justify-end">
-                <div className="max-w-[75%] rounded-lg bg-blue-600 px-3 py-2 text-sm text-white opacity-80">
-                  {model.ctx.interim}
-                </div>
-              </div>
-            )}
+            {/* Audio interim bubble removed */}
           </div>
 
           <div className="mt-3 flex items-center gap-2">
@@ -1021,51 +873,13 @@ export default function VoiceTest() {
               Ask Interview Question
             </button>
 
-            {!isListening && (
-              <button
-                className="rounded-md border px-2 py-2 dark:border-zinc-800"
-                aria-label="Start listening"
-                onClick={handleStartListening}
-                disabled={model.state === 'speaking' || model.state === 'processing'}
-                title="Start listening"
-              >
-                <Mic className="h-4 w-4" />
-              </button>
-            )}
-
-            {isListening && (
-              <button
-                className="rounded-md bg-red-600 px-3 py-2 text-sm text-white hover:bg-red-700"
-                onClick={handleStopListening}
-                aria-label="End response"
-                title="End response"
-              >
-                End response
-              </button>
-            )}
-
-            <button
-              className="rounded-md border px-2 py-2 dark:border-zinc-800"
-              onClick={() => {
-                const lastAssistant = [...messages].reverse().find((m) => m.type === 'assistant');
-                if (lastAssistant) speakText(lastAssistant.text);
-              }}
-              aria-label="Play response"
-            >
-              <Volume2 className="h-4 w-4" />
-            </button>
+            {/* Audio controls removed */}
 
             <button className="rounded-md border px-2 py-2 dark:border-zinc-800" onClick={clearConversation}>
               Clear
             </button>
 
-            <button
-              className="rounded-md border px-2 py-2 dark:border-zinc-800"
-              onClick={handleEndConversation}
-              aria-label="End conversation"
-            >
-              End
-            </button>
+            <button className="rounded-md border px-2 py-2 dark:border-zinc-800" onClick={handleEndConversation} aria-label="End conversation">End</button>
           </div>
         </div>
         {/* Current Score Card below conversation */}
