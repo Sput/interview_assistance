@@ -2,13 +2,13 @@
 
 import React, { useEffect, useRef, useState } from 'react';
 // import { useChat } from '@/hooks/useChat';
-import { Badge } from '@/components/ui/badge';
 import { MessageCircle } from 'lucide-react';
 // Audio-related icons removed
 import { createClient } from '@/lib/supabase';
 
 type Message = { id: string; text: string; type: 'user' | 'assistant' };
 
+const ANONYMOUS_USER_ID = '00000000-0000-0000-0000-000000000001';
 
 const GRADING_ENABLED = true; // enable grading via calc_cos_similarity edge function
 
@@ -178,9 +178,7 @@ export default function VoiceTest() {
   const askInterviewQuestion = async () => {
     try {
       const supabase = createClient();
-      // Identify current user to avoid their recent questions
-      const { data: userData } = await supabase.auth.getUser();
-      const userId = userData?.user?.id;
+      const userId = ANONYMOUS_USER_ID;
       console.log('[prompted] askInterviewQuestion: selectedCategoryId=', selectedCategoryId);
       const selectedCategoryName = selectedCategoryId
         ? categories.find((c) => String(c.id) === String(selectedCategoryId))?.name ?? null
@@ -190,21 +188,19 @@ export default function VoiceTest() {
 
       // Fetch recent question_ids answered/asked by this user to avoid repeats
       let recentIds: number[] = [];
-      if (userId) {
-        const { data: recentRows, error: recentErr } = await supabase
-          .from('answers_table')
-          .select('question_id')
-          .eq('user_id', userId)
-          .order('id', { ascending: false })
-          .limit(5);
-        if (!recentErr && recentRows) {
-          recentIds = (recentRows as any[])
-            .map((r) => r?.question_id)
-            .filter((id: any) => typeof id === 'number');
-        }
-        if (recentErr) {
-          console.warn('[prompted] recentIds error:', recentErr);
-        }
+      const { data: recentRows, error: recentErr } = await supabase
+        .from('answers_table')
+        .select('question_id')
+        .eq('user_id', userId)
+        .order('id', { ascending: false })
+        .limit(5);
+      if (!recentErr && recentRows) {
+        recentIds = (recentRows as any[])
+          .map((r) => r?.question_id)
+          .filter((id: any) => typeof id === 'number');
+      }
+      if (recentErr) {
+        console.warn('[prompted] recentIds error:', recentErr);
       }
       console.log('[prompted] recentIds=', recentIds);
 
@@ -443,42 +439,29 @@ export default function VoiceTest() {
         console.warn('make_vectors invocation threw (question path):', makeVecErr);
       }
 
-      // Also create a new answers_table row now, capturing the generated id for later update
+      // Pre-create the answer row so grading can update it later.
       try {
-        const { data: userData } = await supabase.auth.getUser();
-        const userId = userData?.user?.id;
+        const { data: inserted, error: insertError } = await supabase
+          .from('answers_table')
+          .insert({ user_id: userId, question_id: row.id })
+          .select('id')
+          .single();
 
-        if (!userId) {
-          console.warn('No logged-in user; cannot pre-create answers_table row (user_id required).');
-          setMessages((prev) => [
-            ...prev,
-            {
-              id: `${Date.now()}-no-user`,
-              text: 'You are not logged in. Your answer may not be saved.',
-              type: 'assistant',
-            },
-          ]);
+        if (insertError) {
+          console.error('Failed to pre-create answers_table row:', {
+            message: (insertError as any)?.message,
+            code: (insertError as any)?.code,
+            details: (insertError as any)?.details,
+            hint: (insertError as any)?.hint,
+          });
+          lastAnswerIdRef.current = null;
         } else {
-          const { data: inserted, error: insertError } = await supabase
-            .from('answers_table')
-            .insert({ user_id: userId, question_id: row.id })
-            .select('id')
-            .single();
-
-          if (insertError) {
-            console.error('Failed to pre-create answers_table row:', {
-              message: (insertError as any)?.message,
-              code: (insertError as any)?.code,
-              details: (insertError as any)?.details,
-              hint: (insertError as any)?.hint,
-            });
-          } else {
-            lastAnswerIdRef.current = (inserted as any)?.id ?? null;
-            console.log('Pre-created answers_table row with id:', lastAnswerIdRef.current);
-          }
+          lastAnswerIdRef.current = (inserted as any)?.id ?? null;
+          console.log('Pre-created answers_table row with id:', lastAnswerIdRef.current);
         }
       } catch (preErr) {
         console.error('Unexpected error pre-creating answers_table row:', preErr);
+        lastAnswerIdRef.current = null;
       }
 
       const assistantMsg: Message = {
@@ -634,12 +617,7 @@ export default function VoiceTest() {
         return;
       }
       const supabase = createClient();
-      // Try to get the user id if logged in
-      let userId: string | undefined = undefined;
-      try {
-        const { data: userData } = await supabase.auth.getUser();
-        userId = userData?.user?.id;
-      } catch (_) {}
+      const userId = ANONYMOUS_USER_ID;
 
       // If we pre-created an answers_table row, update it; else insert a new one (fallback)
       if (lastAnswerIdRef.current) {
@@ -696,7 +674,7 @@ export default function VoiceTest() {
               console.error('answer_vectors invocation failed (update path):', fnErr);
             }
             // Best-effort: run cosine similarity grading script
-            await runCosineSimilarity(currentAnswerId as unknown as number, questionId as unknown as number, userId ?? undefined);
+            await runCosineSimilarity(currentAnswerId as unknown as number, questionId as unknown as number, userId);
           }
           // Begin post-grade flow for feedback/looping
           handlePostGrade(currentAnswerId as unknown as number, questionId as unknown as number, answerText);
@@ -704,11 +682,11 @@ export default function VoiceTest() {
           lastAnswerIdRef.current = null;
         }
       } else {
-        const payload: any = {
+        const payload = {
           question_id: questionId,
           answer_text: answerText,
+          user_id: userId,
         };
-        if (userId) payload.user_id = userId;
 
         const { data: insertedRow, error } = await supabase
           .from('answers_table')
@@ -736,7 +714,6 @@ export default function VoiceTest() {
               console.error('Failed to set short-answer grade:', gradeErr);
             }
           } else {
-            // Fire edge function for vectorization (best-effort) via server proxy
             try {
               console.log('[proxy] invoking answer_vectors (insert) answer_id', newId, 'question_id', questionId, 'user_id', userId);
               const resp = await fetch('/api/proxy-function', {
@@ -761,10 +738,8 @@ export default function VoiceTest() {
             } catch (fnErr) {
               console.error('answer_vectors invocation failed (insert path):', fnErr);
             }
-            // Best-effort: run cosine similarity grading script
-            await runCosineSimilarity(newId as number, questionId as unknown as number, userId ?? undefined);
+            await runCosineSimilarity(newId as number, questionId as unknown as number, userId);
           }
-          // Begin post-grade flow for feedback/looping
           if ((insertedRow as any)?.id) {
             handlePostGrade((insertedRow as any).id as number, questionId as unknown as number, answerText);
           }

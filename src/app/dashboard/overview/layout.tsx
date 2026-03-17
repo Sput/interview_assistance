@@ -9,9 +9,9 @@ import { Bar, BarChart, CartesianGrid, XAxis } from 'recharts';
 import { ChartContainer, ChartTooltip, ChartTooltipContent, ChartConfig } from '@/components/ui/chart';
 
 type AnswerRow = { grade: number | null; created_at: string };
+const ANONYMOUS_USER_ID = '00000000-0000-0000-0000-000000000001';
 
 export default function OverViewLayout() {
-  const [userEmail, setUserEmail] = useState<string | null>(null);
   const [grades, setGrades] = useState<AnswerRow[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -19,24 +19,11 @@ export default function OverViewLayout() {
     const run = async () => {
       setLoading(true);
       const supabase = createClient();
-      const {
-        data: { user }
-      } = await supabase.auth.getUser();
-
-      if (!user) {
-        setUserEmail(null);
-        setGrades([]);
-        setLoading(false);
-        return;
-      }
-
-      setUserEmail(user.email ?? user.user_metadata?.email ?? user.id);
-      console.log('[overview] current user id:', user.id);
-
       const query = supabase
         .from('answers_table')
-        .select('grade')
-        .eq('user_id', user.id)
+        .select('grade, created_at')
+        .eq('user_id', ANONYMOUS_USER_ID)
+        .order('created_at', { ascending: false })
         .limit(200);
 
       const { data: rows, error } = await query;
@@ -51,11 +38,8 @@ export default function OverViewLayout() {
         })) as AnswerRow[];
         const gradedCount = dataRows.filter((r) => r.grade !== null).length;
         console.log(
-          `[overview] fetched answers for ${user.id}: total=${dataRows.length}, graded=${gradedCount}`
+          `[overview] fetched answers: total=${dataRows.length}, graded=${gradedCount}`
         );
-        if (dataRows.length === 0) {
-          console.warn('[overview] Query returned zero rows. Check RLS policies and that answers_table.user_id matches the auth user.');
-        }
         setGrades(dataRows);
       }
       setLoading(false);
@@ -63,7 +47,6 @@ export default function OverViewLayout() {
     run();
   }, []);
 
-  const isNewUser = useMemo(() => !userEmail, [userEmail]);
   const hasHistory = useMemo(() => grades.length > 0, [grades]);
   const graded = useMemo(() => grades.filter((g) => g.grade !== null), [grades]);
   const hasGraded = useMemo(() => graded.length > 0, [graded]);
@@ -90,12 +73,10 @@ export default function OverViewLayout() {
       <div className='flex flex-col gap-6'>
         <div className='flex items-end justify-between'>
           <div>
-            <h1 className='text-2xl font-bold'>Welcome{userEmail ? `, ${userEmail}` : ''}</h1>
+            <h1 className='text-2xl font-bold'>Welcome</h1>
             {!hasHistory && !loading && (
               <p className='text-sm text-muted-foreground mt-1'>
-                {isNewUser
-                  ? 'Welcome! Sign in to start practicing interview questions and track your progress.'
-                  : 'No past performance yet — answer your first question to see your progress here.'}
+                No past performance yet. Answer your first question to see your progress here.
               </p>
             )}
             {hasHistory && !hasGraded && (
@@ -187,9 +168,7 @@ export default function OverViewLayout() {
             <CardHeader>
               <CardTitle>Welcome</CardTitle>
               <CardDescription>
-                {isNewUser
-                  ? 'Get started by logging in and trying your first interview question.'
-                  : 'No graded answers yet. Start a practice session or check back after grading completes.'}
+                No graded answers yet. Start a practice session or check back after grading completes.
               </CardDescription>
             </CardHeader>
           </Card>
