@@ -1,11 +1,11 @@
 import { Metadata } from 'next';
-import { redirect } from 'next/navigation';
+import SignInViewPage from '@/features/auth/components/sign-in-view';
 
 export const metadata: Metadata = {
-  title: 'Authentication Removed',
-  description: 'This application no longer requires sign in.'
+  title: 'Sign In',
+  description: 'Sign in to Interview AI.'
 };
 
 export default async function Page() {
-  redirect('/dashboard/overview');
+  return <SignInViewPage stars={0} />;
 }

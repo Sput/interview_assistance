@@ -13,6 +13,7 @@ import {
 } from '@/components/ui/card';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { useState } from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 
 interface AuthFormProps {
@@ -58,7 +59,11 @@ export function SupabaseAuth({ mode }: AuthFormProps) {
         if (error) {
           setError(error.message);
         } else {
-          router.push('/dashboard/overview');
+          const next =
+            new URLSearchParams(window.location.search).get('next') ??
+            '/dashboard/prompted';
+          router.push(next);
+          router.refresh();
         }
       }
     } catch (err) {
@@ -71,11 +76,11 @@ export function SupabaseAuth({ mode }: AuthFormProps) {
   return (
     <Card className='w-full max-w-md'>
       <CardHeader>
-        <CardTitle>{mode === 'sign-in' ? 'Sign In' : 'Sign Up'}</CardTitle>
+        <CardTitle>{mode === 'sign-in' ? 'Sign in' : 'Create account'}</CardTitle>
         <CardDescription>
           {mode === 'sign-in'
-            ? 'Enter your credentials to access your account'
-            : 'Create a new account to get started'}
+            ? 'Use your email and password to continue.'
+            : 'Create an account with your email and password.'}
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -118,11 +123,35 @@ export function SupabaseAuth({ mode }: AuthFormProps) {
 
           <Button type='submit' className='w-full' disabled={loading}>
             {loading
-              ? 'Loading...'
+              ? 'Please wait...'
               : mode === 'sign-in'
-                ? 'Sign In'
-                : 'Sign Up'}
+                ? 'Sign in'
+                : 'Sign up'}
           </Button>
+
+          <p className='text-center text-sm text-muted-foreground'>
+            {mode === 'sign-in' ? (
+              <>
+                Need an account?{' '}
+                <Link
+                  href='/auth/sign-up'
+                  className='font-medium text-primary underline-offset-4 hover:underline'
+                >
+                  Sign up
+                </Link>
+              </>
+            ) : (
+              <>
+                Already have an account?{' '}
+                <Link
+                  href='/auth/sign-in'
+                  className='font-medium text-primary underline-offset-4 hover:underline'
+                >
+                  Sign in
+                </Link>
+              </>
+            )}
+          </p>
         </form>
       </CardContent>
     </Card>

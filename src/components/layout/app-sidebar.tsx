@@ -34,21 +34,50 @@ import {
   IconBell,
   IconChevronRight,
   IconChevronsDown,
-  IconCreditCard,
+  IconLogout,
   IconUserCircle
 } from '@tabler/icons-react';
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import * as React from 'react';
 import { Icons } from '../icons';
+import { createClient } from '@/lib/supabase';
 
 export default function AppSidebar() {
   const pathname = usePathname();
+  const router = useRouter();
   const { isOpen } = useMediaQuery();
+  const [userEmail, setUserEmail] = React.useState<string | null>(null);
 
   React.useEffect(() => {
     // Side effects based on sidebar state changes
   }, [isOpen]);
+
+  React.useEffect(() => {
+    const supabase = createClient();
+
+    supabase.auth.getUser().then((result: any) => {
+      setUserEmail(result.data.user?.email ?? null);
+    });
+
+    const {
+      data: { subscription }
+    } = supabase.auth.onAuthStateChange((_event: string, session: any) => {
+      setUserEmail(session?.user.email ?? null);
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  const handleSignOut = async () => {
+    const supabase = createClient();
+    await supabase.auth.signOut();
+    router.push('/auth/sign-in');
+    router.refresh();
+  };
+
+  const displayEmail = userEmail ?? 'Signed in';
+  const displayName = userEmail?.split('@')[0] ?? 'Interview AI';
 
   return (
     <Sidebar collapsible='icon'>
@@ -128,8 +157,10 @@ export default function AppSidebar() {
                     <IconUserCircle className='size-5' />
                   </div>
                   <div className='grid flex-1 text-left text-sm leading-tight'>
-                    <span className='truncate font-medium'>Interview AI</span>
-                    <span className='truncate text-xs text-muted-foreground'>Anonymous mode</span>
+                    <span className='truncate font-medium'>{displayName}</span>
+                    <span className='truncate text-xs text-muted-foreground'>
+                      {displayEmail}
+                    </span>
                   </div>
                   <IconChevronsDown className='ml-auto size-4' />
                 </SidebarMenuButton>
@@ -146,8 +177,10 @@ export default function AppSidebar() {
                       <IconUserCircle className='size-5' />
                     </div>
                     <div className='grid flex-1 text-left text-sm leading-tight'>
-                      <span className='truncate font-medium'>Interview AI</span>
-                      <span className='truncate text-xs text-muted-foreground'>Authentication removed</span>
+                      <span className='truncate font-medium'>{displayName}</span>
+                      <span className='truncate text-xs text-muted-foreground'>
+                        {displayEmail}
+                      </span>
                     </div>
                   </div>
                 </DropdownMenuLabel>
@@ -156,19 +189,20 @@ export default function AppSidebar() {
                 <DropdownMenuGroup>
                   <DropdownMenuItem asChild>
                     <Link href='/dashboard/profile'>
-                    <IconUserCircle className='mr-2 h-4 w-4' />
-                    Profile
+                      <IconUserCircle className='mr-2 h-4 w-4' />
+                      Profile
                     </Link>
-                  </DropdownMenuItem>
-                  <DropdownMenuItem>
-                    <IconCreditCard className='mr-2 h-4 w-4' />
-                    Billing
                   </DropdownMenuItem>
                   <DropdownMenuItem>
                     <IconBell className='mr-2 h-4 w-4' />
                     Notifications
                   </DropdownMenuItem>
                 </DropdownMenuGroup>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={handleSignOut}>
+                  <IconLogout className='mr-2 h-4 w-4' />
+                  Sign out
+                </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
           </SidebarMenuItem>

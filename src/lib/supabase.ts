@@ -1,36 +1,49 @@
 import {
-  createClientComponentClient,
-  createServerComponentClient,
-} from '@supabase/auth-helpers-nextjs';
+  createBrowserClient,
+  createServerClient as createSupabaseServerClient
+} from '@supabase/ssr';
 
-// Memoize the client on the global object so multiple calls from
-// different components / renders return the same instance. This
-// avoids creating multiple auth listeners or duplicate network
-// requests caused by instantiating many clients in the browser.
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+const supabaseKey =
+  process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ??
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
+
+// Memoize the browser client so repeated renders do not create duplicate
+// auth listeners or redundant network requests.
 export function createClient() {
-  const g = globalThis as any;
-  if (!g.__supabase_client) {
-    g.__supabase_client = createClientComponentClient({
-      supabaseUrl: process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      supabaseKey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    });
+  const globalScope = globalThis as typeof globalThis & {
+    __supabase_client?: ReturnType<typeof createBrowserClient>;
+  };
+
+  if (!globalScope.__supabase_client) {
+    globalScope.__supabase_client = createBrowserClient(
+      supabaseUrl,
+      supabaseKey
+    );
   }
-  return g.__supabase_client;
+
+  return globalScope.__supabase_client;
 }
 
 export async function createServerClient() {
   const { cookies } = await import('next/headers');
-  // Next 15 requires awaiting cookies() before usage in some contexts (route handlers)
   const cookieStore = await cookies();
 
-  return createServerComponentClient(
-    {
-      // Provide an accessor that returns the already-fetched cookie store
-      cookies: () => cookieStore,
-    },
-    {
-      supabaseUrl: process.env.NEXT_PUBLIC_SUPABASE_URL!,
-      supabaseKey: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
+  return createSupabaseServerClient(supabaseUrl, supabaseKey, {
+    cookies: {
+      getAll() {
+        return cookieStore.getAll();
+      },
+      setAll(cookiesToSet) {
+        try {
+          cookiesToSet.forEach(({ name, value, options }) => {
+            cookieStore.set(name, value, options);
+          });
+        } catch {
+          // Server Components cannot write cookies. Middleware refreshes the
+          // session cookies before protected pages render.
+        }
+      }
     }
-  );
+  });
 }
