@@ -78,13 +78,18 @@ export function SupabaseAuth({ mode }: AuthFormProps) {
       <CardHeader>
         <CardTitle>{mode === 'sign-in' ? 'Sign in' : 'Create account'}</CardTitle>
         <CardDescription>
-          {mode === 'sign-in'
-            ? 'Use your email and password to continue.'
-            : 'Create an account with your email and password.'}
+          {mode === 'sign-in' ? (
+            <>
+              Use your email and password to continue. For credentials email me
+              at paulknick at gmail dot com.
+            </>
+          ) : (
+            'Create an account with your email and password.'
+          )}
         </CardDescription>
       </CardHeader>
       <CardContent>
-        <form onSubmit={handleSubmit} className='space-y-4'>
+        <form onSubmit={handleSubmit} className='space-y-4' autoComplete='off'>
           <div className='space-y-2'>
             <Label htmlFor='email'>Email</Label>
             <Input
@@ -93,6 +98,7 @@ export function SupabaseAuth({ mode }: AuthFormProps) {
               value={email}
               onChange={(e) => setEmail(e.target.value)}
               placeholder='Enter your email'
+              autoComplete='off'
               required
             />
           </div>
@@ -105,6 +111,7 @@ export function SupabaseAuth({ mode }: AuthFormProps) {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               placeholder='Enter your password'
+              autoComplete='new-password'
               required
             />
           </div>
@@ -129,18 +136,8 @@ export function SupabaseAuth({ mode }: AuthFormProps) {
                 : 'Sign up'}
           </Button>
 
-          <p className='text-center text-sm text-muted-foreground'>
-            {mode === 'sign-in' ? (
-              <>
-                Need an account?{' '}
-                <Link
-                  href='/auth/sign-up'
-                  className='font-medium text-primary underline-offset-4 hover:underline'
-                >
-                  Sign up
-                </Link>
-              </>
-            ) : (
+          {mode === 'sign-up' && (
+            <p className='text-center text-sm text-muted-foreground'>
               <>
                 Already have an account?{' '}
                 <Link
@@ -150,8 +147,8 @@ export function SupabaseAuth({ mode }: AuthFormProps) {
                   Sign in
                 </Link>
               </>
-            )}
-          </p>
+            </p>
+          )}
         </form>
       </CardContent>
     </Card>
